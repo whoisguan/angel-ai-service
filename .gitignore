@@ -1,1 +1,7 @@
-data/\n.env\n__pycache__/\n*.pyc\n.venv/
+data/
+.env
+__pycache__/
+**/__pycache__/
+*.pyc
+.venv/
+.pytest_cache/

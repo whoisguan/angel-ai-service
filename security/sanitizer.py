@@ -18,7 +18,7 @@ PII_PATTERNS: List[Tuple[str, str]] = [
     # Email addresses
     (r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b", "EMAIL"),
     # IP addresses (internal)
-    (r"\b(?:192\.168|10\.)\d{1,3}\.\d{1,3}\b", "INTERNAL_IP"),
+    (r"\b(?:192\.168\.|10\.)\d{1,3}\.\d{1,3}\b", "INTERNAL_IP"),
 ]
 
 # Patterns that suggest prompt injection in output

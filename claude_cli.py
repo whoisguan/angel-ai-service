@@ -95,7 +95,8 @@ def _build_command(
         cmd.append("--strict-mcp-config")
 
     if allowed_tools:
-        cmd.extend(["--allowedTools", ",".join(allowed_tools)])
+        for tool in allowed_tools:
+            cmd.extend(["--allowedTools", tool])
 
     budget = max_budget or settings.CLAUDE_MAX_BUDGET_USD
     cmd.extend(["--max-budget-usd", str(budget)])

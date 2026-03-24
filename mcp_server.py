@@ -215,6 +215,470 @@ def tool_get_store_ranking(args: dict) -> dict:
         conn.close()
 
 
+def tool_get_employee_score(args: dict) -> dict:
+    """Query employee KPI score details: layer1/layer2/layer3 and total score."""
+    employee_id = args.get("employee_id")
+    store_id = args.get("store_id")
+    year = args["year"]
+    month = args["month"]
+    user_stores = get_user_store_ids()
+
+    if user_stores is not None and not user_stores:
+        return {"error": "You don't have permission to view any store data."}
+    if store_id and user_stores is not None and store_id not in user_stores:
+        return {"error": "You don't have permission to view this store."}
+
+    conn = get_db_connection()
+    if not conn:
+        return {"error": "Database connection not available."}
+
+    try:
+        with conn.cursor() as cur:
+            query = """
+                SELECT e.first_name, e.last_name, s.store_code, s.name as store_name,
+                       sr.layer1_score, sr.layer2_score, sr.layer3_score,
+                       sr.total_score, sr.year, sr.month
+                FROM score_records sr
+                JOIN employees e ON sr.employee_id = e.id
+                JOIN stores s ON sr.store_id = s.id
+                WHERE sr.year = %s AND sr.month = %s
+            """
+            params = [year, month]
+
+            if employee_id:
+                query += " AND sr.employee_id = %s"
+                params.append(employee_id)
+
+            if store_id:
+                query += " AND sr.store_id = %s"
+                params.append(store_id)
+            elif user_stores is not None:
+                placeholders = ",".join(["%s"] * len(user_stores))
+                query += f" AND sr.store_id IN ({placeholders})"
+                params.extend(user_stores)
+
+            query += " ORDER BY sr.total_score DESC, e.last_name, e.first_name"
+            cur.execute(query, params)
+            rows = cur.fetchall()
+            _serialize_rows(rows)
+            return {"scores": rows, "count": len(rows)}
+    finally:
+        conn.close()
+
+
+def tool_get_score_trend(args: dict) -> dict:
+    """Query KPI score trend over multiple months for a store or employee."""
+    entity_type = args["entity_type"]  # STORE or EMPLOYEE
+    entity_id = args["entity_id"]
+    year = args["year"]
+    month_from = args.get("month_from", 1)
+    month_to = args.get("month_to", 12)
+    user_stores = get_user_store_ids()
+
+    if user_stores is not None and not user_stores:
+        return {"error": "You don't have permission to view any store data."}
+
+    conn = get_db_connection()
+    if not conn:
+        return {"error": "Database connection not available."}
+
+    try:
+        with conn.cursor() as cur:
+            if entity_type == "STORE":
+                # Permission check for store
+                if user_stores is not None and entity_id not in user_stores:
+                    return {"error": "You don't have permission to view this store."}
+
+                query = """
+                    SELECT ms.month, ms.final_score as score,
+                           s.store_code, s.name as store_name
+                    FROM monthly_settlement ms
+                    JOIN stores s ON ms.store_id = s.id
+                    WHERE ms.store_id = %s AND ms.year = %s
+                      AND ms.month >= %s AND ms.month <= %s
+                    ORDER BY ms.month
+                """
+                params = [entity_id, year, month_from, month_to]
+
+            elif entity_type == "EMPLOYEE":
+                query = """
+                    SELECT sr.month, sr.total_score as score,
+                           e.first_name, e.last_name,
+                           s.store_code, s.name as store_name
+                    FROM score_records sr
+                    JOIN employees e ON sr.employee_id = e.id
+                    JOIN stores s ON sr.store_id = s.id
+                    WHERE sr.employee_id = %s AND sr.year = %s
+                      AND sr.month >= %s AND sr.month <= %s
+                """
+                params = [entity_id, year, month_from, month_to]
+
+                # Permission check: filter by accessible stores
+                if user_stores is not None:
+                    placeholders = ",".join(["%s"] * len(user_stores))
+                    query += f" AND sr.store_id IN ({placeholders})"
+                    params.extend(user_stores)
+
+                query += " ORDER BY sr.month"
+
+            else:
+                return {"error": f"Invalid entity_type: {entity_type}. Use STORE or EMPLOYEE."}
+
+            cur.execute(query, params)
+            rows = cur.fetchall()
+            _serialize_rows(rows)
+
+            # Compute trend summary
+            scores = [r["score"] for r in rows if r["score"] is not None]
+            summary = {}
+            if scores:
+                summary = {
+                    "avg": round(sum(scores) / len(scores), 2),
+                    "best": max(scores),
+                    "worst": min(scores),
+                    "months_count": len(scores),
+                }
+
+            return {"trend": rows, "summary": summary}
+    finally:
+        conn.close()
+
+
+def tool_get_scoring_completion(args: dict) -> dict:
+    """Query scoring completion status: total, completed, pending, rate."""
+    year = args["year"]
+    month = args["month"]
+    store_id = args.get("store_id")
+    user_stores = get_user_store_ids()
+
+    if user_stores is not None and not user_stores:
+        return {"error": "You don't have permission to view any store data."}
+    if store_id and user_stores is not None and store_id not in user_stores:
+        return {"error": "You don't have permission to view this store."}
+
+    conn = get_db_connection()
+    if not conn:
+        return {"error": "Database connection not available."}
+
+    try:
+        with conn.cursor() as cur:
+            query = """
+                SELECT s.store_code, s.name as store_name,
+                       COUNT(*) as total_tasks,
+                       SUM(CASE WHEN st.status = 'completed' THEN 1 ELSE 0 END) as completed,
+                       SUM(CASE WHEN st.status != 'completed' THEN 1 ELSE 0 END) as pending,
+                       ROUND(SUM(CASE WHEN st.status = 'completed' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) as completion_rate
+                FROM score_tasks st
+                JOIN stores s ON st.store_id = s.id
+                WHERE st.year = %s AND st.month = %s
+            """
+            params = [year, month]
+
+            if store_id:
+                query += " AND st.store_id = %s"
+                params.append(store_id)
+            elif user_stores is not None:
+                placeholders = ",".join(["%s"] * len(user_stores))
+                query += f" AND st.store_id IN ({placeholders})"
+                params.extend(user_stores)
+
+            query += " GROUP BY s.store_code, s.name ORDER BY s.store_code"
+            cur.execute(query, params)
+            rows = cur.fetchall()
+            _serialize_rows(rows)
+
+            # Compute overall summary
+            total = sum(r["total_tasks"] for r in rows)
+            completed = sum(r["completed"] for r in rows)
+            pending = sum(r["pending"] for r in rows)
+            overall_rate = round(completed * 100.0 / total, 1) if total > 0 else 0.0
+
+            return {
+                "by_store": rows,
+                "overall": {
+                    "total_tasks": total,
+                    "completed": completed,
+                    "pending": pending,
+                    "completion_rate": overall_rate,
+                },
+            }
+    finally:
+        conn.close()
+
+
+def tool_get_department_bonus(args: dict) -> dict:
+    """Query department-level bonus allocation for a store."""
+    store_id = args["store_id"]
+    year = args["year"]
+    month = args["month"]
+    user_stores = get_user_store_ids()
+
+    if user_stores is not None and not user_stores:
+        return {"error": "You don't have permission to view any store data."}
+    if user_stores is not None and store_id not in user_stores:
+        return {"error": "You don't have permission to view this store."}
+
+    conn = get_db_connection()
+    if not conn:
+        return {"error": "Database connection not available."}
+
+    try:
+        with conn.cursor() as cur:
+            query = """
+                SELECT d.dept_code, d.name as dept_name,
+                       db.bonus_amount, db.share_ratio,
+                       db.headcount, db.avg_bonus_per_person
+                FROM dept_bonus db
+                JOIN departments d ON db.department_id = d.id
+                WHERE db.store_id = %s AND db.year = %s AND db.month = %s
+                ORDER BY db.bonus_amount DESC
+            """
+            params = [store_id, year, month]
+            cur.execute(query, params)
+            rows = cur.fetchall()
+            _serialize_rows(rows)
+            return {"departments": rows, "count": len(rows), "store_id": store_id}
+    finally:
+        conn.close()
+
+
+def tool_get_config_params(args: dict) -> dict:
+    """Query configuration parameters (public, no permission check)."""
+    param_category = args.get("param_category")
+
+    conn = get_db_connection()
+    if not conn:
+        return {"error": "Database connection not available."}
+
+    try:
+        with conn.cursor() as cur:
+            query = """
+                SELECT param_category, param_name, param_value, description
+                FROM config_params
+            """
+            params = []
+
+            if param_category:
+                query += " WHERE param_category = %s"
+                params.append(param_category)
+
+            query += " ORDER BY param_category, param_name"
+            cur.execute(query, params)
+            rows = cur.fetchall()
+            _serialize_rows(rows)
+            return {"params": rows, "count": len(rows)}
+    finally:
+        conn.close()
+
+
+# Pre-defined explanation texts for calculation rules (Chinese + Italian)
+_CALCULATION_EXPLANATIONS = {
+    "progressive_tiers": {
+        "zh": (
+            "累进制分档：根据门店营业额超出基线的比例，分段计算奖金池。"
+            "例如：超出0-10%部分按A%提取，10-20%部分按B%提取，以此类推。"
+            "档位越高，提取比例越大，激励门店持续突破。"
+        ),
+        "it": (
+            "Scaglioni progressivi: il pool bonus viene calcolato in base alla percentuale "
+            "di superamento del fatturato rispetto alla baseline, con aliquote crescenti "
+            "per ogni scaglione."
+        ),
+    },
+    "category_adjustment": {
+        "zh": (
+            "品类调整系数：根据门店主营品类的市场难度，对奖金池进行系数调整。"
+            "不同品类的调整系数在config_params中配置。"
+        ),
+        "it": (
+            "Coefficiente di aggiustamento per categoria: il pool bonus viene moltiplicato "
+            "per un coefficiente basato sulla difficoltà di mercato della categoria principale."
+        ),
+    },
+    "dept_allocation": {
+        "zh": (
+            "部门分配：门店总奖金池按部门分配比例（dept_share）拆分到各部门。"
+            "分配比例由管理层设定，反映各部门对业绩的贡献权重。"
+        ),
+        "it": (
+            "Allocazione dipartimentale: il pool bonus totale viene suddiviso tra i dipartimenti "
+            "secondo le quote stabilite (dept_share)."
+        ),
+    },
+    "personal_coefficient": {
+        "zh": (
+            "个人系数：由员工的岗位级别、工龄、特殊角色等因素决定。"
+            "个人系数影响该员工在部门奖金中的分配份额。"
+        ),
+        "it": (
+            "Coefficiente personale: determinato dal livello, anzianità e ruolo speciale del dipendente. "
+            "Influenza la quota di bonus dipartimentale assegnata."
+        ),
+    },
+    "kpi_factor": {
+        "zh": (
+            "KPI因子：根据员工KPI评分转换为0-1.2的乘数。"
+            "评分越高，KPI因子越大，最终奖金 = 基础奖金 × KPI因子。"
+            "低于及格线的员工KPI因子为0，不发放绩效奖金（但可能有保底）。"
+        ),
+        "it": (
+            "Fattore KPI: il punteggio KPI viene convertito in un moltiplicatore (0-1.2). "
+            "Bonus finale = bonus base × fattore KPI. Sotto la soglia minima, il fattore è 0."
+        ),
+    },
+    "minimum_payout": {
+        "zh": (
+            "保底机制：即使员工KPI评分不达标，仍可获得一笔保底奖金（consolation bonus）。"
+            "保底金额在config_params中配置，确保基本激励。"
+        ),
+        "it": (
+            "Pagamento minimo: anche se il punteggio KPI è insufficiente, il dipendente riceve "
+            "un bonus di consolazione configurato nei parametri."
+        ),
+    },
+    "reserve_fund": {
+        "zh": (
+            "储备金：每月从门店奖金池中提取一定比例作为储备金。"
+            "储备金用于年终调节、特殊奖励或弥补淡季。"
+        ),
+        "it": (
+            "Fondo di riserva: una percentuale del pool bonus mensile viene accantonata. "
+            "Utilizzata per conguagli di fine anno, premi speciali o compensazione dei mesi deboli."
+        ),
+    },
+    "scoring_v3_layers": {
+        "zh": (
+            "V3三层评分体系：\n"
+            "Layer 1 — 业绩指标（营业额、增长率等客观数据）\n"
+            "Layer 2 — 管理指标（库存管理、客户服务、团队协作等）\n"
+            "Layer 3 — 额外加减分（特殊贡献、违规扣分等）\n"
+            "总分 = Layer1 + Layer2 + Layer3，满分100分。"
+        ),
+        "it": (
+            "Sistema di valutazione V3 a tre livelli:\n"
+            "Layer 1 — Indicatori di performance (fatturato, crescita)\n"
+            "Layer 2 — Indicatori gestionali (inventario, servizio clienti, teamwork)\n"
+            "Layer 3 — Bonus/malus aggiuntivi (contributi speciali, penalità)\n"
+            "Punteggio totale = Layer1 + Layer2 + Layer3, massimo 100."
+        ),
+    },
+}
+
+
+def tool_explain_calculation(args: dict) -> dict:
+    """Return pre-defined explanation text for a calculation rule topic."""
+    topic = args["topic"]
+    explanation = _CALCULATION_EXPLANATIONS.get(topic)
+    if not explanation:
+        valid_topics = list(_CALCULATION_EXPLANATIONS.keys())
+        return {"error": f"Unknown topic: {topic}. Valid topics: {valid_topics}"}
+    return {"topic": topic, "explanation_zh": explanation["zh"], "explanation_it": explanation["it"]}
+
+
+def tool_detect_anomalies(args: dict) -> dict:
+    """Detect data anomalies in monthly settlement: score swings, zero surplus, low scores."""
+    year = args["year"]
+    month = args["month"]
+    user_stores = get_user_store_ids()
+
+    if user_stores is not None and not user_stores:
+        return {"error": "You don't have permission to view any store data."}
+
+    conn = get_db_connection()
+    if not conn:
+        return {"error": "Database connection not available."}
+
+    try:
+        anomalies = []
+        with conn.cursor() as cur:
+            # Build store filter clause
+            store_filter = ""
+            store_params = []
+            if user_stores is not None:
+                placeholders = ",".join(["%s"] * len(user_stores))
+                store_filter = f" AND ms.store_id IN ({placeholders})"
+                store_params = list(user_stores)
+
+            # 1. Detect score_swing: compare with previous month
+            query_swing = f"""
+                SELECT s.store_code, s.name as store_name,
+                       ms.final_score as current_score,
+                       prev.final_score as prev_score,
+                       (ms.final_score - prev.final_score) as score_diff
+                FROM monthly_settlement ms
+                JOIN monthly_settlement prev
+                  ON ms.store_id = prev.store_id
+                  AND prev.year = CASE WHEN %s = 1 THEN %s - 1 ELSE %s END
+                  AND prev.month = CASE WHEN %s = 1 THEN 12 ELSE %s - 1 END
+                JOIN stores s ON ms.store_id = s.id
+                WHERE ms.year = %s AND ms.month = %s
+                  AND ABS(ms.final_score - prev.final_score) > 20
+                  {store_filter}
+            """
+            params_swing = [month, year, year, month, month, year, month] + store_params
+            cur.execute(query_swing, params_swing)
+            for row in cur.fetchall():
+                _serialize_rows([row])
+                anomalies.append({
+                    "type": "score_swing",
+                    "severity": "high" if abs(row["score_diff"]) > 30 else "medium",
+                    "store_code": row["store_code"],
+                    "detail": (
+                        f"{row['store_name']}: score changed by {row['score_diff']:+.1f} "
+                        f"({row['prev_score']:.1f} -> {row['current_score']:.1f})"
+                    ),
+                })
+
+            # 2. Detect zero_surplus: stores with zero or negative surplus
+            query_zero = f"""
+                SELECT s.store_code, s.name as store_name,
+                       ms.surplus_amount, ms.total_revenue, ms.baseline_revenue
+                FROM monthly_settlement ms
+                JOIN stores s ON ms.store_id = s.id
+                WHERE ms.year = %s AND ms.month = %s
+                  AND ms.surplus_amount <= 0
+                  {store_filter}
+            """
+            params_zero = [year, month] + store_params
+            cur.execute(query_zero, params_zero)
+            for row in cur.fetchall():
+                _serialize_rows([row])
+                anomalies.append({
+                    "type": "zero_surplus",
+                    "severity": "medium",
+                    "store_code": row["store_code"],
+                    "detail": (
+                        f"{row['store_name']}: surplus={row['surplus_amount']:.2f} "
+                        f"(revenue={row['total_revenue']:.2f}, baseline={row['baseline_revenue']:.2f})"
+                    ),
+                })
+
+            # 3. Detect low_score: stores with final_score below 50
+            query_low = f"""
+                SELECT s.store_code, s.name as store_name,
+                       ms.final_score
+                FROM monthly_settlement ms
+                JOIN stores s ON ms.store_id = s.id
+                WHERE ms.year = %s AND ms.month = %s
+                  AND ms.final_score < 50
+                  {store_filter}
+            """
+            params_low = [year, month] + store_params
+            cur.execute(query_low, params_low)
+            for row in cur.fetchall():
+                _serialize_rows([row])
+                anomalies.append({
+                    "type": "low_score",
+                    "severity": "high" if row["final_score"] < 30 else "medium",
+                    "store_code": row["store_code"],
+                    "detail": f"{row['store_name']}: final_score={row['final_score']:.1f} (below 50)",
+                })
+
+        return {"anomalies": anomalies, "count": len(anomalies), "year": year, "month": month}
+    finally:
+        conn.close()
+
+
 # --- MCP Protocol Handler (stdio JSON-RPC) ---
 
 TOOLS = {
@@ -255,6 +719,99 @@ TOOLS = {
             "required": ["year", "month"],
         },
         "handler": tool_get_store_ranking,
+    },
+    "get_employee_score": {
+        "description": "Query employee KPI score details: layer1, layer2, layer3 breakdown and total score. Filter by employee or store.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "employee_id": {"type": "integer", "description": "Employee ID (optional)"},
+                "store_id": {"type": "integer", "description": "Store ID (optional)"},
+                "year": {"type": "integer", "description": "Year"},
+                "month": {"type": "integer", "description": "Month 1-12"},
+            },
+            "required": ["year", "month"],
+        },
+        "handler": tool_get_employee_score,
+    },
+    "get_score_trend": {
+        "description": "Query KPI score trend over multiple months for a store or employee. Returns monthly scores and trend summary (avg, best, worst).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entity_type": {"type": "string", "enum": ["STORE", "EMPLOYEE"], "description": "STORE or EMPLOYEE"},
+                "entity_id": {"type": "integer", "description": "Store ID or Employee ID"},
+                "year": {"type": "integer", "description": "Year"},
+                "month_from": {"type": "integer", "description": "Start month (default 1)"},
+                "month_to": {"type": "integer", "description": "End month (default 12)"},
+            },
+            "required": ["entity_type", "entity_id", "year"],
+        },
+        "handler": tool_get_score_trend,
+    },
+    "get_scoring_completion": {
+        "description": "Query scoring completion status: how many score tasks are completed vs pending, with completion rate per store.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "year": {"type": "integer", "description": "Year"},
+                "month": {"type": "integer", "description": "Month 1-12"},
+                "store_id": {"type": "integer", "description": "Store ID (optional)"},
+            },
+            "required": ["year", "month"],
+        },
+        "handler": tool_get_scoring_completion,
+    },
+    "get_department_bonus": {
+        "description": "Query department-level bonus allocation for a specific store: bonus amount, share ratio, headcount, and average per person.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "store_id": {"type": "integer", "description": "Store ID"},
+                "year": {"type": "integer", "description": "Year"},
+                "month": {"type": "integer", "description": "Month 1-12"},
+            },
+            "required": ["store_id", "year", "month"],
+        },
+        "handler": tool_get_department_bonus,
+    },
+    "get_config_params": {
+        "description": "Query system configuration parameters (e.g. progressive_tiers, dept_share, bonus_coefficient). Public data, no permission restriction.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "param_category": {"type": "string", "description": "Filter by category (optional, e.g. 'progressive_tiers', 'dept_share', 'bonus_coefficient')"},
+            },
+            "required": [],
+        },
+        "handler": tool_get_config_params,
+    },
+    "explain_calculation": {
+        "description": "Get a human-readable explanation of a KPI/bonus calculation rule, in both Chinese and Italian.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "topic": {
+                    "type": "string",
+                    "enum": ["progressive_tiers", "category_adjustment", "dept_allocation", "personal_coefficient", "kpi_factor", "minimum_payout", "reserve_fund", "scoring_v3_layers"],
+                    "description": "The calculation topic to explain",
+                },
+            },
+            "required": ["topic"],
+        },
+        "handler": tool_explain_calculation,
+    },
+    "detect_anomalies": {
+        "description": "Detect data anomalies in monthly settlement: large score swings, zero/negative surplus, abnormally low scores. Respects user's store access scope.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "year": {"type": "integer", "description": "Year"},
+                "month": {"type": "integer", "description": "Month 1-12"},
+            },
+            "required": ["year", "month"],
+        },
+        "handler": tool_detect_anomalies,
     },
 }
 
