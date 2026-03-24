@@ -41,11 +41,10 @@ class TestDetectPII:
         assert any(f["type"] == "INTERNAL_IP" for f in findings)
 
     def test_internal_ip_192_168_not_matched(self):
-        # NOTE: The current regex for 192.168.x.y is missing a dot separator,
-        # so "192.168.1.110" does NOT match. This documents the actual behavior.
+        # 192.168.x.y should be detected as internal IP
         text = "Il server e' su 192.168.1.110"
         findings = detect_pii(text)
-        assert not any(f["type"] == "INTERNAL_IP" for f in findings)
+        assert any(f["type"] == "INTERNAL_IP" for f in findings)
 
     def test_no_pii_in_clean_text(self):
         text = "Le vendite di marzo sono aumentate del 12%."
