@@ -1,5 +1,7 @@
 """Chat service — orchestrates CLI calls, history, and sanitization."""
 
+import asyncio
+import logging
 import os
 from datetime import datetime, timezone
 from typing import AsyncIterator, Optional
@@ -7,8 +9,12 @@ from typing import AsyncIterator, Optional
 import claude_cli
 from config import settings
 from db.sqlite_db import get_db
-from models.schemas import ChatRequest, ChatMessage, UserContext
+from models.schemas import ChatRequest, ChatMessage, ChatResponse, UserContext
+from security.input_guard import check_input, sanitize_page_context
+from security.rate_limiter import acquire_cli_slot, release_cli_slot, check_daily_limit
 from security.sanitizer import sanitize_output
+
+logger = logging.getLogger(__name__)
 
 
 def _load_system_prompt(user_ctx: UserContext, page_context: dict = None) -> str:
@@ -100,39 +106,56 @@ def _save_message(
             )
 
 
+def _build_full_prompt(message: str, conversation_id: str = None) -> str:
+    """Build full prompt with conversation history."""
+    history = []
+    if conversation_id:
+        history = _get_conversation_history(conversation_id)
+
+    prompt_parts = []
+    for msg in history[-8:]:
+        role_label = "User" if msg["role"] == "user" else "Assistant"
+        prompt_parts.append(f"<{role_label.lower()}>{msg['content']}</{role_label.lower()}>")
+    prompt_parts.append(f"<user>{message}</user>")
+    return "\n\n".join(prompt_parts)
+
+
 async def chat(
     request: ChatRequest,
     user_ctx: UserContext,
-) -> ChatMessage:
-    """Process a non-streaming chat request."""
+) -> ChatResponse:
+    """Process a non-streaming chat request. Returns ChatResponse with real conversation_id."""
     conversation_id = request.conversation_id or claude_cli.generate_conversation_id()
     user_msg_id = claude_cli.generate_message_id()
     ai_msg_id = claude_cli.generate_message_id()
 
-    # Build prompt with conversation history
-    history = []
-    if request.conversation_id:
-        history = _get_conversation_history(request.conversation_id)
+    # Input validation
+    injection = check_input(request.message)
+    if injection:
+        logger.warning(f"Injection attempt by user {user_ctx.user_id}: {injection}")
 
-    # Build the full prompt (history + current question)
-    prompt_parts = []
-    for msg in history[-8:]:  # last 8 turns
-        role_label = "User" if msg["role"] == "user" else "Assistant"
-        prompt_parts.append(f"{role_label}: {msg['content']}")
-    prompt_parts.append(f"User: {request.message}")
-    full_prompt = "\n\n".join(prompt_parts)
+    # Rate limiting
+    check_daily_limit(user_ctx.user_id, user_ctx.source_system)
 
-    system_prompt = _load_system_prompt(user_ctx, request.page_context)
+    # Sanitize page context
+    clean_page_ctx = sanitize_page_context(request.page_context) if request.page_context else None
+
+    full_prompt = _build_full_prompt(request.message, request.conversation_id)
+    system_prompt = _load_system_prompt(user_ctx, clean_page_ctx)
 
     # Save user message
     _save_message(conversation_id, user_msg_id, "user", request.message, user_ctx)
 
-    # Call Claude CLI
-    result = await claude_cli.query(
-        prompt=full_prompt,
-        system_prompt=system_prompt,
-        user_store_ids=user_ctx.scope.store_ids,
-    )
+    # Call Claude CLI with concurrency control
+    await acquire_cli_slot()
+    try:
+        result = await claude_cli.query(
+            prompt=full_prompt,
+            system_prompt=system_prompt,
+            user_store_ids=user_ctx.scope.store_ids,
+        )
+    finally:
+        release_cli_slot()
 
     # Sanitize output
     clean_content = sanitize_output(result.result)
@@ -143,7 +166,7 @@ async def chat(
         cost_usd=result.cost_usd, duration_ms=result.duration_ms, model=result.model,
     )
 
-    return ChatMessage(
+    msg = ChatMessage(
         message_id=ai_msg_id,
         role="assistant",
         content=clean_content,
@@ -151,6 +174,7 @@ async def chat(
         cost_usd=result.cost_usd,
         duration_ms=result.duration_ms,
     )
+    return ChatResponse(conversation_id=conversation_id, message=msg)
 
 
 async def chat_stream(
@@ -162,19 +186,17 @@ async def chat_stream(
     user_msg_id = claude_cli.generate_message_id()
     ai_msg_id = claude_cli.generate_message_id()
 
-    # Build prompt
-    history = []
-    if request.conversation_id:
-        history = _get_conversation_history(request.conversation_id)
+    # Input validation
+    injection = check_input(request.message)
+    if injection:
+        logger.warning(f"Injection attempt (stream) by user {user_ctx.user_id}: {injection}")
 
-    prompt_parts = []
-    for msg in history[-8:]:
-        role_label = "User" if msg["role"] == "user" else "Assistant"
-        prompt_parts.append(f"{role_label}: {msg['content']}")
-    prompt_parts.append(f"User: {request.message}")
-    full_prompt = "\n\n".join(prompt_parts)
+    # Rate limiting
+    check_daily_limit(user_ctx.user_id, user_ctx.source_system)
 
-    system_prompt = _load_system_prompt(user_ctx, request.page_context)
+    clean_page_ctx = sanitize_page_context(request.page_context) if request.page_context else None
+    full_prompt = _build_full_prompt(request.message, request.conversation_id)
+    system_prompt = _load_system_prompt(user_ctx, clean_page_ctx)
 
     # Save user message
     _save_message(conversation_id, user_msg_id, "user", request.message, user_ctx)
@@ -188,11 +210,13 @@ async def chat_stream(
     duration_ms = 0
     model = ""
 
-    async for event in claude_cli.stream(
+    await acquire_cli_slot()
+    try:
+      async for event in claude_cli.stream(
         prompt=full_prompt,
         system_prompt=system_prompt,
         user_store_ids=user_ctx.scope.store_ids,
-    ):
+      ):
         if event["type"] == "content":
             chunk = event["text"]
             full_content += chunk
@@ -212,6 +236,9 @@ async def chat_stream(
 
         elif event["type"] == "error":
             yield f"data: {json.dumps({'type': 'error', 'message': event['message']})}\n\n"
+
+    finally:
+      release_cli_slot()
 
     # Sanitize final content
     clean_content = sanitize_output(full_content)

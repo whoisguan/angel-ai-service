@@ -14,29 +14,33 @@ from security.auth import verify_service_token
 router = APIRouter(tags=["admin"])
 
 _start_time = time.time()
+_cli_status_cache: dict = {"ok": False, "checked_at": 0}
+_CLI_CHECK_INTERVAL = 60  # seconds
 
 
 @router.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Health check — no authentication required."""
-    # Check CLI availability
-    cli_ok = False
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            settings.CLAUDE_CLI_PATH, "--version",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
-        cli_ok = proc.returncode == 0
-    except Exception:
-        cli_ok = False
+    """Health check — no authentication required. CLI check cached for 60s."""
+    now = time.time()
+
+    if now - _cli_status_cache["checked_at"] > _CLI_CHECK_INTERVAL:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                settings.CLAUDE_CLI_PATH, "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            _cli_status_cache["ok"] = proc.returncode == 0
+        except Exception:
+            _cli_status_cache["ok"] = False
+        _cli_status_cache["checked_at"] = now
 
     return HealthResponse(
-        status="healthy" if cli_ok else "degraded",
+        status="healthy" if _cli_status_cache["ok"] else "degraded",
         version="0.1.0",
-        cli_available=cli_ok,
-        uptime_seconds=int(time.time() - _start_time),
+        cli_available=_cli_status_cache["ok"],
+        uptime_seconds=int(now - _start_time),
     )
 
 
