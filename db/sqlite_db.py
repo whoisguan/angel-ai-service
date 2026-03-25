@@ -159,6 +159,41 @@ def init_db():
 
             CREATE INDEX IF NOT EXISTS idx_rc_expires
                 ON retrieval_cache(expires_at);
+
+            -- User profiles for question pattern tracking (Phase 3)
+            CREATE TABLE IF NOT EXISTS user_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                source_system TEXT NOT NULL DEFAULT 'angel-kpi',
+                top_topics TEXT DEFAULT '{}',
+                question_count INTEGER DEFAULT 0,
+                avg_questions_per_day REAL DEFAULT 0,
+                preferred_language TEXT DEFAULT 'it',
+                created_at TEXT,
+                last_active TEXT,
+                updated_at TEXT NOT NULL,
+                UNIQUE(user_id, source_system)
+            );
+
+            -- Cross-conversation memory (Phase 3)
+            CREATE TABLE IF NOT EXISTS user_memories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                source_system TEXT NOT NULL DEFAULT 'angel-kpi',
+                memory_key TEXT NOT NULL,
+                content TEXT NOT NULL,
+                source_conversation_id TEXT,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                is_deleted INTEGER DEFAULT 0 CHECK(is_deleted IN (0, 1)),
+                deleted_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_um_user_active
+                ON user_memories(user_id, source_system, is_deleted, expires_at);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_um_user_key_active
+                ON user_memories(user_id, source_system, memory_key) WHERE is_deleted = 0;
         """)
         # FTS5 virtual table for knowledge base search (separate statement)
         conn.execute("""

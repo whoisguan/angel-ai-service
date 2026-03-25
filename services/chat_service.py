@@ -14,6 +14,8 @@ from security.input_guard import check_input, sanitize_page_context
 from security.rate_limiter import acquire_cli_slot, release_cli_slot, check_daily_limit  # release is now async
 from security.sanitizer import sanitize_output
 from services.knowledge_service import build_knowledge_context, route_question, log_retrieval
+from services.memory_service import build_memory_context, extract_memories_from_response
+from services.user_profile_service import get_profile_summary, update_profile
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +66,16 @@ def _load_system_prompt(user_ctx: UserContext, page_context: dict = None) -> tup
         for key, value in page_context.items():
             page_info += f"- {key}: {value}\n"
 
-    return base_prompt + user_info + page_info, version_tag
+    # Inject user profile summary (if enough history)
+    profile_info = ""
+    profile_summary = get_profile_summary(user_ctx.user_id, user_ctx.source_system)
+    if profile_summary:
+        profile_info = f"\n## User Profile\n{profile_summary}\n"
+
+    # Inject cross-conversation memories
+    memory_info = build_memory_context(user_ctx.user_id, user_ctx.source_system) or ""
+
+    return base_prompt + user_info + page_info + profile_info + memory_info, version_tag
 
 
 def _enrich_prompt_with_knowledge(prompt: str, user_message: str, user_ctx: UserContext = None) -> tuple[str, str, list[int]]:
@@ -79,16 +90,16 @@ def _enrich_prompt_with_knowledge(prompt: str, user_message: str, user_ctx: User
     return prompt, route, kb_ids
 
 
-def _get_conversation_history(conversation_id: str, user_id: int, limit: int = 10) -> list[dict]:
-    """Load recent messages from a conversation for context. Validates ownership."""
+def _get_conversation_history(conversation_id: str, user_id: int, source_system: str = "angel-kpi", limit: int = 10) -> list[dict]:
+    """Load recent messages from a conversation for context. Validates ownership + source_system."""
     with get_db() as db:
-        # H1 fix: verify conversation belongs to requesting user
+        # H1 fix: verify conversation belongs to requesting user AND source_system
         owner = db.execute(
-            "SELECT user_id FROM conversations WHERE id = ?",
+            "SELECT user_id, source_system FROM conversations WHERE id = ?",
             (conversation_id,),
         ).fetchone()
-        if owner and owner["user_id"] != user_id:
-            logger.warning(f"User {user_id} attempted to access conversation {conversation_id} owned by {owner['user_id']}")
+        if owner and (owner["user_id"] != user_id or owner["source_system"] != source_system):
+            logger.warning(f"User {user_id}/{source_system} attempted to access conversation {conversation_id}")
             return []
 
         rows = db.execute(
@@ -117,7 +128,7 @@ def _save_message(
     with get_db() as db:
         # Ensure conversation exists and belongs to this user (H1 write-path fix)
         existing = db.execute(
-            "SELECT id, user_id FROM conversations WHERE id = ?",
+            "SELECT id, user_id, source_system FROM conversations WHERE id = ?",
             (conversation_id,),
         ).fetchone()
 
@@ -127,9 +138,9 @@ def _save_message(
                    VALUES (?, ?, ?, ?, ?)""",
                 (conversation_id, user_ctx.user_id, user_ctx.source_system, now, now),
             )
-        elif existing["user_id"] != user_ctx.user_id:
-            # Block cross-user write
-            logger.warning(f"User {user_ctx.user_id} tried to write to conversation {conversation_id} owned by {existing['user_id']}")
+        elif existing["user_id"] != user_ctx.user_id or existing["source_system"] != user_ctx.source_system:
+            # Block cross-user or cross-system write
+            logger.warning(f"User {user_ctx.user_id}/{user_ctx.source_system} tried to write to conversation {conversation_id}")
             raise ValueError(f"Conversation ownership mismatch")
         else:
             db.execute(
@@ -153,11 +164,11 @@ def _save_message(
             )
 
 
-def _build_full_prompt(message: str, conversation_id: str = None, user_id: int = None) -> str:
+def _build_full_prompt(message: str, conversation_id: str = None, user_id: int = None, source_system: str = "angel-kpi") -> str:
     """Build full prompt with conversation history."""
     history = []
     if conversation_id and user_id is not None:
-        history = _get_conversation_history(conversation_id, user_id)
+        history = _get_conversation_history(conversation_id, user_id, source_system)
 
     prompt_parts = []
     for msg in history[-8:]:
@@ -189,7 +200,7 @@ async def chat(
     # Sanitize page context
     clean_page_ctx = sanitize_page_context(request.page_context) if request.page_context else None
 
-    full_prompt = _build_full_prompt(request.message, request.conversation_id, user_ctx.user_id)
+    full_prompt = _build_full_prompt(request.message, request.conversation_id, user_ctx.user_id, user_ctx.source_system)
     system_prompt, prompt_version = _load_system_prompt(user_ctx, clean_page_ctx)
     system_prompt, route, kb_ids = _enrich_prompt_with_knowledge(system_prompt, request.message, user_ctx)
 
@@ -218,6 +229,13 @@ async def chat(
 
     # Log retrieval with message_id for traceability
     log_retrieval(request.message, kb_ids, route, prompt_version=prompt_version, message_id=ai_msg_id)
+
+    # Update user profile and extract memories (fire-and-forget, non-blocking)
+    try:
+        update_profile(user_ctx.user_id, request.message, user_ctx.source_system)
+        extract_memories_from_response(user_ctx.user_id, request.message, clean_content, user_ctx.source_system, conversation_id)
+    except Exception:
+        logger.debug("Profile/memory update failed", exc_info=True)
 
     msg = ChatMessage(
         message_id=ai_msg_id,
@@ -256,7 +274,7 @@ async def chat_stream(
         await acquire_cli_slot()
 
     clean_page_ctx = sanitize_page_context(request.page_context) if request.page_context else None
-    full_prompt = _build_full_prompt(request.message, request.conversation_id, user_ctx.user_id)
+    full_prompt = _build_full_prompt(request.message, request.conversation_id, user_ctx.user_id, user_ctx.source_system)
     system_prompt, prompt_version = _load_system_prompt(user_ctx, clean_page_ctx)
     system_prompt, route, kb_ids = _enrich_prompt_with_knowledge(system_prompt, request.message, user_ctx)
 
@@ -314,6 +332,9 @@ async def chat_stream(
                 )
                 # Log retrieval with message_id for traceability
                 log_retrieval(request.message, kb_ids, route, prompt_version=prompt_version, message_id=ai_msg_id)
+                # Update user profile and extract memories
+                update_profile(user_ctx.user_id, request.message, user_ctx.source_system)
+                extract_memories_from_response(user_ctx.user_id, request.message, clean_content, user_ctx.source_system, conversation_id)
             except Exception:
                 logger.exception("Failed to save assistant message after stream")
 

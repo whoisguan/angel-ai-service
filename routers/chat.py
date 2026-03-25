@@ -2,7 +2,7 @@
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path
 from fastapi.responses import StreamingResponse
 
 from claude_cli import CLIError
@@ -12,6 +12,7 @@ from security.auth import get_authenticated_context, verify_service_token
 from security.input_guard import check_input
 from security.rate_limiter import acquire_cli_slot, release_cli_slot, check_daily_limit
 from services.chat_service import chat, chat_stream
+from services.memory_service import get_memories, delete_memory, delete_all_memories
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ai", tags=["ai"])
@@ -100,3 +101,33 @@ async def submit_feedback(
                 logger.warning(f"Feedback for message {body.message_id}: no matching retrieval_feedback row")
 
     return {"status": "recorded", "retrieval_linked": retrieval_linked if (body.accuracy or body.resolved is not None) else None}
+
+
+@router.get("/memories")
+async def list_memories(
+    user_ctx: UserContext = Depends(get_authenticated_context),
+):
+    """List active memories for the current user."""
+    memories = get_memories(user_ctx.user_id, source_system=user_ctx.source_system, limit=20)
+    return {"memories": memories}
+
+
+@router.delete("/memories/{memory_key}")
+async def remove_memory(
+    memory_key: str = Path(..., pattern=r"^[a-zA-Z0-9_]{1,50}$"),
+    user_ctx: UserContext = Depends(get_authenticated_context),
+):
+    """Soft-delete a specific memory."""
+    deleted = delete_memory(user_ctx.user_id, memory_key, source_system=user_ctx.source_system)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {"status": "deleted"}
+
+
+@router.delete("/memories")
+async def remove_all_memories(
+    user_ctx: UserContext = Depends(get_authenticated_context),
+):
+    """Soft-delete all memories for the current user (right to be forgotten)."""
+    count = delete_all_memories(user_ctx.user_id, source_system=user_ctx.source_system)
+    return {"status": "deleted", "count": count}
