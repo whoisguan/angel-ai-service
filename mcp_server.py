@@ -83,7 +83,7 @@ def tool_get_store_performance(args: dict) -> dict:
                 SELECT s.store_code, s.name as store_name,
                        ms.year, ms.month,
                        ms.total_revenue, ms.baseline_revenue,
-                       ms.surplus_amount, ms.growth_rate,
+                       ms.surplus_amount, ms.surplus_growth_rate,
                        ms.final_score, ms.final_bonus_pool,
                        ms.is_frozen
                 FROM monthly_settlement ms
@@ -139,11 +139,11 @@ def tool_get_employee_bonus(args: dict) -> dict:
             query = """
                 SELECT e.first_name, e.last_name, s.store_code, s.name as store_name,
                        d.dept_code, pb.bonus_gross, pb.kpi_score, pb.kpi_factor,
-                       pb.bonus_net, pb.is_consolation
+                       pb.bonus_net
                 FROM personal_bonus pb
                 JOIN employees e ON pb.employee_id = e.id
                 JOIN stores s ON pb.store_id = s.id
-                JOIN departments d ON pb.department_id = d.id
+                JOIN departments d ON pb.dept_id = d.id
                 WHERE pb.year = %s AND pb.month = %s
             """
             params = [year, month]
@@ -196,7 +196,7 @@ def tool_get_store_ranking(args: dict) -> dict:
         with conn.cursor() as cur:
             query = """
                 SELECT s.store_code, s.name as store_name,
-                       ms.final_score, ms.growth_rate, ms.total_revenue,
+                       ms.final_score, ms.surplus_growth_rate, ms.total_revenue,
                        ms.final_bonus_pool,
                        RANK() OVER (ORDER BY ms.final_score DESC) as rank_score
                 FROM monthly_settlement ms
@@ -240,25 +240,25 @@ def tool_get_employee_score(args: dict) -> dict:
         with conn.cursor() as cur:
             query = """
                 SELECT e.first_name, e.last_name, s.store_code, s.name as store_name,
-                       sr.layer1_score, sr.layer2_score, sr.layer3_score,
-                       sr.total_score, sr.year, sr.month
+                       sr.total_score, sr.weighted_score,
+                       sr.year, sr.month
                 FROM score_records sr
-                JOIN employees e ON sr.employee_id = e.id
-                JOIN stores s ON sr.store_id = s.id
+                JOIN employees e ON sr.target_employee_id = e.id
+                JOIN stores s ON sr.target_store_id = s.id
                 WHERE sr.year = %s AND sr.month = %s
             """
             params = [year, month]
 
             if employee_id:
-                query += " AND sr.employee_id = %s"
+                query += " AND sr.target_employee_id = %s"
                 params.append(employee_id)
 
             if store_id:
-                query += " AND sr.store_id = %s"
+                query += " AND sr.target_store_id = %s"
                 params.append(store_id)
             elif user_stores is not None:
                 placeholders = ",".join(["%s"] * len(user_stores))
-                query += f" AND sr.store_id IN ({placeholders})"
+                query += f" AND sr.target_store_id IN ({placeholders})"
                 params.extend(user_stores)
 
             query += " ORDER BY sr.total_score DESC, e.last_name, e.first_name"
@@ -310,9 +310,9 @@ def tool_get_score_trend(args: dict) -> dict:
                            e.first_name, e.last_name,
                            s.store_code, s.name as store_name
                     FROM score_records sr
-                    JOIN employees e ON sr.employee_id = e.id
-                    JOIN stores s ON sr.store_id = s.id
-                    WHERE sr.employee_id = %s AND sr.year = %s
+                    JOIN employees e ON sr.target_employee_id = e.id
+                    JOIN stores s ON sr.target_store_id = s.id
+                    WHERE sr.target_employee_id = %s AND sr.year = %s
                       AND sr.month >= %s AND sr.month <= %s
                 """
                 params = [entity_id, year, month_from, month_to]
@@ -320,7 +320,7 @@ def tool_get_score_trend(args: dict) -> dict:
                 # Permission check: filter by accessible stores
                 if user_stores is not None:
                     placeholders = ",".join(["%s"] * len(user_stores))
-                    query += f" AND sr.store_id IN ({placeholders})"
+                    query += f" AND sr.target_store_id IN ({placeholders})"
                     params.extend(user_stores)
 
                 query += " ORDER BY sr.month"
@@ -373,17 +373,17 @@ def tool_get_scoring_completion(args: dict) -> dict:
                        SUM(CASE WHEN st.status != 'completed' THEN 1 ELSE 0 END) as pending,
                        ROUND(SUM(CASE WHEN st.status = 'completed' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) as completion_rate
                 FROM score_tasks st
-                JOIN stores s ON st.store_id = s.id
+                JOIN stores s ON st.target_store_id = s.id
                 WHERE st.year = %s AND st.month = %s
             """
             params = [year, month]
 
             if store_id:
-                query += " AND st.store_id = %s"
+                query += " AND st.target_store_id = %s"
                 params.append(store_id)
             elif user_stores is not None:
                 placeholders = ",".join(["%s"] * len(user_stores))
-                query += f" AND st.store_id IN ({placeholders})"
+                query += f" AND st.target_store_id IN ({placeholders})"
                 params.extend(user_stores)
 
             query += " GROUP BY s.store_code, s.name ORDER BY s.store_code"
@@ -429,11 +429,10 @@ def tool_get_department_bonus(args: dict) -> dict:
     try:
         with conn.cursor() as cur:
             query = """
-                SELECT d.dept_code, d.name as dept_name,
-                       db.bonus_amount, db.share_ratio,
-                       db.headcount, db.avg_bonus_per_person
+                SELECT d.dept_code, d.dept_name_it as dept_name,
+                       db.bonus_amount
                 FROM dept_bonus db
-                JOIN departments d ON db.department_id = d.id
+                JOIN departments d ON db.dept_id = d.id
                 WHERE db.store_id = %s AND db.year = %s AND db.month = %s
                 ORDER BY db.bonus_amount DESC
             """
