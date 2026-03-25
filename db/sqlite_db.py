@@ -93,6 +93,63 @@ def init_db():
 
             CREATE INDEX IF NOT EXISTS idx_usage_date
                 ON usage_log(created_at);
+
+            -- Knowledge base for AI learning (Phase 1a)
+            CREATE TABLE IF NOT EXISTS knowledge_base (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                question TEXT NOT NULL,
+                answer TEXT NOT NULL,
+                category TEXT NOT NULL CHECK(category IN ('glossary','rule','faq','process')),
+                tags TEXT,
+                source_message_id TEXT,
+                confidence REAL DEFAULT 0.5,
+                status TEXT DEFAULT 'draft' CHECK(status IN ('draft','verified','archived')),
+                scope TEXT DEFAULT 'all',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                verified_by TEXT,
+                verified_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_kb_status
+                ON knowledge_base(status);
+
+            -- Retrieval feedback for learning loop
+            CREATE TABLE IF NOT EXISTS retrieval_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query TEXT NOT NULL,
+                retrieved_kb_ids TEXT,
+                route_decision TEXT CHECK(route_decision IN ('static','dynamic','hybrid')),
+                user_feedback TEXT CHECK(user_feedback IN ('correct','incorrect','partial','resolved','unresolved')),
+                prompt_version TEXT,
+                mcp_tools_used TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_rf_feedback
+                ON retrieval_feedback(user_feedback, created_at);
+        """)
+        # FTS5 virtual table for knowledge base search (separate statement)
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS kb_fts
+            USING fts5(question, answer, tags, content=knowledge_base, content_rowid=id)
+        """)
+        # Triggers to keep FTS5 in sync with knowledge_base
+        conn.executescript("""
+            CREATE TRIGGER IF NOT EXISTS kb_fts_ai AFTER INSERT ON knowledge_base BEGIN
+                INSERT INTO kb_fts(rowid, question, answer, tags)
+                VALUES (NEW.id, NEW.question, NEW.answer, NEW.tags);
+            END;
+            CREATE TRIGGER IF NOT EXISTS kb_fts_ad AFTER DELETE ON knowledge_base BEGIN
+                INSERT INTO kb_fts(kb_fts, rowid, question, answer, tags)
+                VALUES ('delete', OLD.id, OLD.question, OLD.answer, OLD.tags);
+            END;
+            CREATE TRIGGER IF NOT EXISTS kb_fts_au AFTER UPDATE ON knowledge_base BEGIN
+                INSERT INTO kb_fts(kb_fts, rowid, question, answer, tags)
+                VALUES ('delete', OLD.id, OLD.question, OLD.answer, OLD.tags);
+                INSERT INTO kb_fts(rowid, question, answer, tags)
+                VALUES (NEW.id, NEW.question, NEW.answer, NEW.tags);
+            END;
         """)
         conn.commit()
     finally:

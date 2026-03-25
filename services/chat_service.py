@@ -13,6 +13,7 @@ from models.schemas import ChatRequest, ChatMessage, ChatResponse, UserContext
 from security.input_guard import check_input, sanitize_page_context
 from security.rate_limiter import acquire_cli_slot, release_cli_slot, check_daily_limit  # release is now async
 from security.sanitizer import sanitize_output
+from services.knowledge_service import build_knowledge_context, route_question, log_retrieval
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,14 @@ def _load_system_prompt(user_ctx: UserContext, page_context: dict = None) -> str
             page_info += f"- {key}: {value}\n"
 
     return base_prompt + user_info + page_info
+
+
+def _enrich_prompt_with_knowledge(prompt: str, user_message: str) -> str:
+    """Inject relevant knowledge context into the prompt if available."""
+    knowledge_ctx = build_knowledge_context(user_message)
+    if knowledge_ctx:
+        return prompt + knowledge_ctx
+    return prompt
 
 
 def _get_conversation_history(conversation_id: str, user_id: int, limit: int = 10) -> list[dict]:
@@ -157,6 +166,7 @@ async def chat(
 
     full_prompt = _build_full_prompt(request.message, request.conversation_id, user_ctx.user_id)
     system_prompt = _load_system_prompt(user_ctx, clean_page_ctx)
+    system_prompt = _enrich_prompt_with_knowledge(system_prompt, request.message)
 
     # Save user message
     _save_message(conversation_id, user_msg_id, "user", request.message, user_ctx)
@@ -220,6 +230,7 @@ async def chat_stream(
     clean_page_ctx = sanitize_page_context(request.page_context) if request.page_context else None
     full_prompt = _build_full_prompt(request.message, request.conversation_id, user_ctx.user_id)
     system_prompt = _load_system_prompt(user_ctx, clean_page_ctx)
+    system_prompt = _enrich_prompt_with_knowledge(system_prompt, request.message)
 
     # Save user message
     _save_message(conversation_id, user_msg_id, "user", request.message, user_ctx)
