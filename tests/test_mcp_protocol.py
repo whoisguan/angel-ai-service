@@ -130,7 +130,9 @@ class TestToolsCall:
                 "params": {"name": "get_store_performance", "arguments": {"year": 2026}},
             })
             assert resp["result"]["isError"] is True
-            assert "Error" in resp["result"]["content"][0]["text"]
+            error_text = resp["result"]["content"][0]["text"].lower()
+            assert "internal error" in error_text
+            assert "db gone" not in error_text  # original exception must not leak
         finally:
             TOOLS["get_store_performance"]["handler"] = original_handler
 

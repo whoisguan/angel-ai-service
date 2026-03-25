@@ -11,8 +11,12 @@ from typing import List, Tuple
 PII_PATTERNS: List[Tuple[str, str]] = [
     # Codice Fiscale (Italian tax ID)
     (r"\b[A-Z]{6}\d{2}[A-EHLMPR-T]\d{2}[A-Z]\d{3}[A-Z]\b", "CODICE_FISCALE"),
+    # Partita IVA (Italian VAT number)
+    (r"\bIT\d{11}\b", "PARTITA_IVA"),
     # IBAN (Italian)
     (r"\bIT\d{2}[A-Z]\d{22}\b", "IBAN"),
+    # Credit card numbers (must have space/dash separators between 4-digit groups)
+    (r"\b\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{1,4}\b", "CREDIT_CARD"),
     # Italian phone numbers
     (r"\b\+?39\s?\d{3}\s?\d{6,7}\b", "PHONE"),
     # Email addresses

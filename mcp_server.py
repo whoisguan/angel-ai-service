@@ -878,11 +878,14 @@ def handle_request(request: dict) -> dict:
                 },
             }
         except Exception as e:
+            # M10 fix: log full error server-side, return generic message to client
+            import sys
+            print(f"[MCP] Tool '{tool_name}' error: {e}", file=sys.stderr)
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "result": {
-                    "content": [{"type": "text", "text": f"Error: {e}"}],
+                    "content": [{"type": "text", "text": "An internal error occurred while processing your request."}],
                     "isError": True,
                 },
             }

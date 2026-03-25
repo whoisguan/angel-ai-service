@@ -62,6 +62,44 @@ class TestDetectPII:
         assert "EMAIL" in types
         assert "INTERNAL_IP" in types
 
+    def test_partita_iva(self):
+        text = "La Partita IVA e' IT01234567890."
+        findings = detect_pii(text)
+        assert any(f["type"] == "PARTITA_IVA" for f in findings)
+
+    def test_partita_iva_not_confused_with_iban(self):
+        text = "IBAN: IT60X0542811101000000123456"
+        findings = detect_pii(text)
+        types = [f["type"] for f in findings]
+        assert "IBAN" in types
+        # IBAN has a letter at position 5, so P.IVA should NOT match
+        assert "PARTITA_IVA" not in types
+
+    def test_credit_card_grouped(self):
+        text = "Carta: 4111 1111 1111 1111"
+        findings = detect_pii(text)
+        assert any(f["type"] == "CREDIT_CARD" for f in findings)
+
+    def test_credit_card_with_dashes(self):
+        text = "Card: 5500-0000-0000-0004"
+        findings = detect_pii(text)
+        assert any(f["type"] == "CREDIT_CARD" for f in findings)
+
+    def test_long_number_not_credit_card(self):
+        """13-digit revenue figure should NOT be detected as credit card."""
+        text = "Il fatturato annuale e' 1234567890123 EUR."
+        findings = detect_pii(text)
+        # Ungrouped 13-digit number should not match the 4-digit-group pattern
+        cc_findings = [f for f in findings if f["type"] == "CREDIT_CARD"]
+        assert cc_findings == []
+
+    def test_ean_barcode_not_credit_card(self):
+        """EAN-13 barcode should NOT be detected as credit card."""
+        text = "Prodotto EAN: 8001234567890"
+        findings = detect_pii(text)
+        cc_findings = [f for f in findings if f["type"] == "CREDIT_CARD"]
+        assert cc_findings == []
+
 
 # ---------------------------------------------------------------------------
 # redact_pii
@@ -81,6 +119,16 @@ class TestRedactPII:
     def test_redacts_iban(self):
         result = redact_pii("IBAN: IT60X0542811101000000123456")
         assert "[IBAN_REDACTED]" in result
+
+    def test_redacts_partita_iva(self):
+        result = redact_pii("P.IVA: IT01234567890")
+        assert "[PARTITA_IVA_REDACTED]" in result
+        assert "IT01234567890" not in result
+
+    def test_redacts_credit_card(self):
+        result = redact_pii("Carta 4111 1111 1111 1111")
+        assert "[CREDIT_CARD_REDACTED]" in result
+        assert "4111" not in result
 
     def test_no_change_on_clean_text(self):
         text = "Revenue grew 15% in Q1."
