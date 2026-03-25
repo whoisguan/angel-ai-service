@@ -11,24 +11,32 @@ from db.sqlite_db import get_db
 
 logger = logging.getLogger(__name__)
 
-# Global semaphore for concurrent CLI calls
-_cli_semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_REQUESTS)
+# Global concurrency control for CLI calls
+_cli_lock = asyncio.Lock()
+_cli_active = 0
 
 
 async def acquire_cli_slot():
-    """Acquire a CLI execution slot. Raises 429 if all slots busy."""
-    acquired = _cli_semaphore._value > 0  # check without acquiring
-    if not acquired:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="AI service is busy. Please try again in a moment.",
-        )
-    await _cli_semaphore.acquire()
+    """Acquire a CLI execution slot. Raises 429 if all slots busy.
+
+    H3 fix: use an atomic counter under Lock instead of semaphore + wait_for(0.0).
+    This avoids the TOCTOU race and the wait_for coroutine-wrapping issue.
+    """
+    global _cli_active
+    async with _cli_lock:
+        if _cli_active >= settings.MAX_CONCURRENT_REQUESTS:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="AI service is busy. Please try again in a moment.",
+            )
+        _cli_active += 1
 
 
-def release_cli_slot():
+async def release_cli_slot():
     """Release a CLI execution slot."""
-    _cli_semaphore.release()
+    global _cli_active
+    async with _cli_lock:
+        _cli_active = max(0, _cli_active - 1)
 
 
 def check_daily_limit(user_id: int, source_system: str):

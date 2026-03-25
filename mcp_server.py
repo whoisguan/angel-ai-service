@@ -126,6 +126,10 @@ def tool_get_employee_bonus(args: dict) -> dict:
     month = args["month"]
     user_stores = get_user_store_ids()
 
+    # H2 fix: empty list = no permission, not admin bypass
+    if user_stores is not None and not user_stores:
+        return {"error": "No store access permission."}
+
     conn = get_db_connection()
     if not conn:
         return {"error": "Database connection not available."}
@@ -148,7 +152,7 @@ def tool_get_employee_bonus(args: dict) -> dict:
                 query += " AND pb.employee_id = %s"
                 params.append(employee_id)
 
-            if user_stores:
+            if user_stores is not None:
                 placeholders = ",".join(["%s"] * len(user_stores))
                 query += f" AND pb.store_id IN ({placeholders})"
                 params.extend(user_stores)

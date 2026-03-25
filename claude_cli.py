@@ -79,7 +79,6 @@ def _build_command(
         "--output-format", output_format,
         "--no-session-persistence",
         "--permission-mode", settings.CLAUDE_PERMISSION_MODE,
-        "--bare",
     ]
 
     if system_prompt:

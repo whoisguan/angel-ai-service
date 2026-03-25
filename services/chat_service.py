@@ -11,7 +11,7 @@ from config import settings
 from db.sqlite_db import get_db
 from models.schemas import ChatRequest, ChatMessage, ChatResponse, UserContext
 from security.input_guard import check_input, sanitize_page_context
-from security.rate_limiter import acquire_cli_slot, release_cli_slot, check_daily_limit
+from security.rate_limiter import acquire_cli_slot, release_cli_slot, check_daily_limit  # release is now async
 from security.sanitizer import sanitize_output
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ def _load_system_prompt(user_ctx: UserContext, page_context: dict = None) -> str
         f"\n\n## Current User\n"
         f"- User ID: {user_ctx.user_id}\n"
         f"- Roles: {', '.join(user_ctx.roles)}\n"
-        f"- Accessible stores: {', '.join(str(s) for s in user_ctx.scope.store_ids) or 'all'}\n"
+        f"- Accessible stores: {', '.join(str(s) for s in user_ctx.scope.store_ids) if user_ctx.scope.store_ids else 'all (admin)'}\n"
         f"- Language preference: {user_ctx.locale}\n"
     )
 
@@ -45,9 +45,18 @@ def _load_system_prompt(user_ctx: UserContext, page_context: dict = None) -> str
     return base_prompt + user_info + page_info
 
 
-def _get_conversation_history(conversation_id: str, limit: int = 10) -> list[dict]:
-    """Load recent messages from a conversation for context."""
+def _get_conversation_history(conversation_id: str, user_id: int, limit: int = 10) -> list[dict]:
+    """Load recent messages from a conversation for context. Validates ownership."""
     with get_db() as db:
+        # H1 fix: verify conversation belongs to requesting user
+        owner = db.execute(
+            "SELECT user_id FROM conversations WHERE id = ?",
+            (conversation_id,),
+        ).fetchone()
+        if owner and owner["user_id"] != user_id:
+            logger.warning(f"User {user_id} attempted to access conversation {conversation_id} owned by {owner['user_id']}")
+            return []
+
         rows = db.execute(
             """SELECT role, content FROM messages
                WHERE conversation_id = ?
@@ -69,12 +78,12 @@ def _save_message(
     duration_ms: int = 0,
     model: str = "",
 ):
-    """Save a message to the database."""
+    """Save a message to the database. Validates conversation ownership."""
     now = datetime.now(timezone.utc).isoformat()
     with get_db() as db:
-        # Ensure conversation exists
+        # Ensure conversation exists and belongs to this user (H1 write-path fix)
         existing = db.execute(
-            "SELECT id FROM conversations WHERE id = ?",
+            "SELECT id, user_id FROM conversations WHERE id = ?",
             (conversation_id,),
         ).fetchone()
 
@@ -84,6 +93,10 @@ def _save_message(
                    VALUES (?, ?, ?, ?, ?)""",
                 (conversation_id, user_ctx.user_id, user_ctx.source_system, now, now),
             )
+        elif existing["user_id"] != user_ctx.user_id:
+            # Block cross-user write
+            logger.warning(f"User {user_ctx.user_id} tried to write to conversation {conversation_id} owned by {existing['user_id']}")
+            raise ValueError(f"Conversation ownership mismatch")
         else:
             db.execute(
                 "UPDATE conversations SET updated_at = ? WHERE id = ?",
@@ -106,11 +119,11 @@ def _save_message(
             )
 
 
-def _build_full_prompt(message: str, conversation_id: str = None) -> str:
+def _build_full_prompt(message: str, conversation_id: str = None, user_id: int = None) -> str:
     """Build full prompt with conversation history."""
     history = []
-    if conversation_id:
-        history = _get_conversation_history(conversation_id)
+    if conversation_id and user_id is not None:
+        history = _get_conversation_history(conversation_id, user_id)
 
     prompt_parts = []
     for msg in history[-8:]:
@@ -129,10 +142,12 @@ async def chat(
     user_msg_id = claude_cli.generate_message_id()
     ai_msg_id = claude_cli.generate_message_id()
 
-    # Input validation
+    # Input validation — block if injection detected (C1 fix)
     injection = check_input(request.message)
     if injection:
         logger.warning(f"Injection attempt by user {user_ctx.user_id}: {injection}")
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Your message was blocked by our safety filter.")
 
     # Rate limiting
     check_daily_limit(user_ctx.user_id, user_ctx.source_system)
@@ -140,7 +155,7 @@ async def chat(
     # Sanitize page context
     clean_page_ctx = sanitize_page_context(request.page_context) if request.page_context else None
 
-    full_prompt = _build_full_prompt(request.message, request.conversation_id)
+    full_prompt = _build_full_prompt(request.message, request.conversation_id, user_ctx.user_id)
     system_prompt = _load_system_prompt(user_ctx, clean_page_ctx)
 
     # Save user message
@@ -155,7 +170,7 @@ async def chat(
             user_store_ids=user_ctx.scope.store_ids,
         )
     finally:
-        release_cli_slot()
+        await release_cli_slot()
 
     # Sanitize output
     clean_content = sanitize_output(result.result)
@@ -180,22 +195,30 @@ async def chat(
 async def chat_stream(
     request: ChatRequest,
     user_ctx: UserContext,
+    slot_already_acquired: bool = False,
 ) -> AsyncIterator[str]:
-    """Process a streaming chat request, yielding SSE events."""
+    """Process a streaming chat request, yielding SSE events.
+
+    Pre-flight checks (injection, rate limit, slot) are done in the router
+    BEFORE the generator starts, so HTTP 400/429 can be returned properly.
+    The slot is released in the finally block below.
+    """
     conversation_id = request.conversation_id or claude_cli.generate_conversation_id()
     user_msg_id = claude_cli.generate_message_id()
     ai_msg_id = claude_cli.generate_message_id()
 
-    # Input validation
-    injection = check_input(request.message)
-    if injection:
-        logger.warning(f"Injection attempt (stream) by user {user_ctx.user_id}: {injection}")
-
-    # Rate limiting
-    check_daily_limit(user_ctx.user_id, user_ctx.source_system)
+    if not slot_already_acquired:
+        # Fallback: if called without pre-flight from router
+        injection = check_input(request.message)
+        if injection:
+            logger.warning(f"Injection attempt (stream) by user {user_ctx.user_id}: {injection}")
+            from fastapi import HTTPException
+            raise HTTPException(status_code=400, detail="Your message was blocked by our safety filter.")
+        check_daily_limit(user_ctx.user_id, user_ctx.source_system)
+        await acquire_cli_slot()
 
     clean_page_ctx = sanitize_page_context(request.page_context) if request.page_context else None
-    full_prompt = _build_full_prompt(request.message, request.conversation_id)
+    full_prompt = _build_full_prompt(request.message, request.conversation_id, user_ctx.user_id)
     system_prompt = _load_system_prompt(user_ctx, clean_page_ctx)
 
     # Save user message
@@ -208,46 +231,50 @@ async def chat_stream(
     full_content = ""
     cost_usd = 0
     duration_ms = 0
-    model = ""
+    model = settings.CLAUDE_MODEL  # M9 fix: default model for streaming
 
-    await acquire_cli_slot()
     try:
-      async for event in claude_cli.stream(
-        prompt=full_prompt,
-        system_prompt=system_prompt,
-        user_store_ids=user_ctx.scope.store_ids,
-      ):
-        if event["type"] == "content":
-            chunk = event["text"]
-            full_content += chunk
-            # Real-time PII redaction on each chunk
-            clean_chunk = sanitize_output(chunk)
-            yield f"data: {json.dumps({'type': 'delta', 'content': clean_chunk})}\n\n"
+        # H4+H5 fix: all streaming logic + save in single try/finally
+        async for event in claude_cli.stream(
+            prompt=full_prompt,
+            system_prompt=system_prompt,
+            user_store_ids=user_ctx.scope.store_ids,
+        ):
+            if event["type"] == "content":
+                chunk = event["text"]
+                full_content += chunk
+                clean_chunk = sanitize_output(chunk)
+                yield f"data: {json.dumps({'type': 'delta', 'content': clean_chunk})}\n\n"
 
-        elif event["type"] == "tool_use":
-            yield f"data: {json.dumps({'type': 'tool_use', 'tool': event['tool']})}\n\n"
+            elif event["type"] == "tool_use":
+                yield f"data: {json.dumps({'type': 'tool_use', 'tool': event['tool']})}\n\n"
 
-        elif event["type"] == "result":
-            cost_usd = event.get("cost_usd", 0)
-            duration_ms = event.get("duration_ms", 0)
-            # Use result text if we didn't get streaming content
-            if not full_content and event.get("text"):
-                full_content = event["text"]
+            elif event["type"] == "result":
+                cost_usd = event.get("cost_usd", 0)
+                duration_ms = event.get("duration_ms", 0)
+                if not full_content and event.get("text"):
+                    full_content = event["text"]
 
-        elif event["type"] == "error":
-            yield f"data: {json.dumps({'type': 'error', 'message': event['message']})}\n\n"
+            elif event["type"] == "error":
+                yield f"data: {json.dumps({'type': 'error', 'message': event['message']})}\n\n"
+
+    except Exception as e:
+        # H4 fix: catch errors during streaming iteration
+        logger.error(f"Error during streaming: {e}")
+        yield f"data: {json.dumps({'type': 'error', 'message': 'AI service encountered an error.'})}\n\n"
 
     finally:
-      release_cli_slot()
-
-    # Sanitize final content
-    clean_content = sanitize_output(full_content)
-
-    # Save assistant message
-    _save_message(
-        conversation_id, ai_msg_id, "assistant", clean_content, user_ctx,
-        cost_usd=cost_usd, duration_ms=duration_ms, model=model,
-    )
+        await release_cli_slot()
+        # H5 fix: save message even on disconnect/error
+        if full_content:
+            try:
+                clean_content = sanitize_output(full_content)
+                _save_message(
+                    conversation_id, ai_msg_id, "assistant", clean_content, user_ctx,
+                    cost_usd=cost_usd, duration_ms=duration_ms, model=model,
+                )
+            except Exception:
+                logger.exception("Failed to save assistant message after stream")
 
     # Done event
     yield f"data: {json.dumps({'type': 'done', 'message_id': ai_msg_id, 'cost_usd': cost_usd, 'duration_ms': duration_ms})}\n\n"

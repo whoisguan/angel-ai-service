@@ -9,6 +9,8 @@ from claude_cli import CLIError
 from db.sqlite_db import get_db
 from models.schemas import ChatRequest, ChatResponse, FeedbackRequest, UserContext
 from security.auth import get_authenticated_context, verify_service_token
+from security.input_guard import check_input
+from security.rate_limiter import acquire_cli_slot, release_cli_slot, check_daily_limit
 from services.chat_service import chat, chat_stream
 
 logger = logging.getLogger(__name__)
@@ -20,11 +22,28 @@ async def chat_endpoint(
     request: ChatRequest,
     user_ctx: UserContext = Depends(get_authenticated_context),
 ):
-    """Chat with AI. Supports both streaming (SSE) and synchronous modes."""
+    """Chat with AI. Supports both streaming (SSE) and synchronous modes.
+
+    For streaming: pre-flight checks run here so HTTP errors (400/429) are
+    returned before the response starts. The CLI slot is acquired here and
+    released inside the generator's finally block.
+
+    For sync: chat() handles everything internally.
+    """
     try:
         if request.stream:
+            # Pre-flight checks for streaming (must happen before first yield)
+            injection = check_input(request.message)
+            if injection:
+                logger.warning(f"Injection attempt by user {user_ctx.user_id}: {injection}")
+                raise HTTPException(status_code=400, detail="Your message was blocked by our safety filter.")
+
+            check_daily_limit(user_ctx.user_id, user_ctx.source_system)
+            await acquire_cli_slot()
+
+            # chat_stream will call release_cli_slot in its finally block
             return StreamingResponse(
-                chat_stream(request, user_ctx),
+                chat_stream(request, user_ctx, slot_already_acquired=True),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -33,8 +52,11 @@ async def chat_endpoint(
                 },
             )
         else:
+            # Sync path: chat() handles all checks internally
             return await chat(request, user_ctx)
 
+    except HTTPException:
+        raise  # Let 400/429 pass through unchanged
     except CLIError as e:
         logger.error(f"CLI error: {e} | stderr: {e.stderr}")
         raise HTTPException(
