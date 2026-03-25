@@ -40,7 +40,7 @@ class TestUserContext:
         assert ctx.source_system == "angel-kpi"
         assert ctx.locale == "it"
         assert ctx.roles == []
-        assert ctx.scope.store_ids == []
+        assert ctx.scope.store_ids is None  # None = admin (all stores)
 
     def test_full_user_context(self):
         ctx = UserContext(

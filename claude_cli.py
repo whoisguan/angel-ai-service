@@ -122,7 +122,7 @@ async def query(
     """Execute a synchronous claude -p call, return parsed result."""
 
     # Write MCP config to temp file
-    mcp_config = _build_mcp_config(user_store_ids or [], extra_mcp_env)
+    mcp_config = _build_mcp_config(user_store_ids, extra_mcp_env)
     mcp_config_path = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -201,7 +201,7 @@ async def stream(
     - {"type": "error", "message": "..."} — error
     """
 
-    mcp_config = _build_mcp_config(user_store_ids or [])
+    mcp_config = _build_mcp_config(user_store_ids)
     mcp_config_path = None
     try:
         with tempfile.NamedTemporaryFile(

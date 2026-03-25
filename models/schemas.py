@@ -8,7 +8,7 @@ from datetime import datetime
 # --- User Context (from X-User-Context header) ---
 
 class UserScope(BaseModel):
-    store_ids: Optional[List[int]] = Field(default_factory=list)  # None = admin (all stores)
+    store_ids: Optional[List[int]] = None  # None = admin (all stores), [] = no access
     department_codes: List[str] = Field(default_factory=list)
 
 
