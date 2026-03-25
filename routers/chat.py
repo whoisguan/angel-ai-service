@@ -76,7 +76,7 @@ async def submit_feedback(
     body: FeedbackRequest,
     _token: str = Depends(verify_service_token),
 ):
-    """Record user feedback on an AI response."""
+    """Record user feedback on an AI response (enhanced with accuracy + resolved)."""
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc).isoformat()
     with get_db() as db:
@@ -84,4 +84,19 @@ async def submit_feedback(
             "INSERT INTO feedback (message_id, rating, comment, created_at) VALUES (?, ?, ?, ?)",
             (body.message_id, body.rating, body.comment, now),
         )
+
+        # Link feedback to retrieval event if accuracy/resolved provided
+        if body.accuracy or body.resolved is not None:
+            feedback_val = body.accuracy or ("resolved" if body.resolved else "unresolved")
+            db.execute(
+                """UPDATE retrieval_feedback
+                   SET user_feedback = ?
+                   WHERE id = (
+                       SELECT id FROM retrieval_feedback
+                       WHERE created_at >= datetime(?, '-5 minutes')
+                       ORDER BY created_at DESC LIMIT 1
+                   )""",
+                (feedback_val, now),
+            )
+
     return {"status": "recorded"}

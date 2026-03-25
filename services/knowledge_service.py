@@ -58,8 +58,8 @@ def route_question(query: str) -> str:
     return "dynamic"
 
 
-def search_knowledge(query: str, limit: int = 3) -> list[dict]:
-    """Search the knowledge base using FTS5. Returns only verified entries."""
+def search_knowledge(query: str, user_roles: list[str] = None, limit: int = 3) -> list[dict]:
+    """Search the knowledge base using FTS5. Returns only verified entries matching user scope."""
     try:
         with get_db() as db:
             # Check if FTS table has content
@@ -69,17 +69,30 @@ def search_knowledge(query: str, limit: int = 3) -> list[dict]:
 
             # Escape FTS5 operators by quoting the query as a phrase
             safe_query = '"' + query.replace('"', '""') + '"'
+
+            # Determine accessible scopes based on user roles
+            accessible_scopes = ["all"]
+            if user_roles:
+                if any(r in ("admin", "ROLE_SUPER_ADMIN", "ROLE_ADMIN") for r in user_roles):
+                    accessible_scopes.extend(["admin", "store_manager", "employee"])
+                elif any(r in ("store_manager", "ROLE_STORE_MANAGER") for r in user_roles):
+                    accessible_scopes.extend(["store_manager", "employee"])
+                else:
+                    accessible_scopes.append("employee")
+
+            placeholders = ",".join(["?"] * len(accessible_scopes))
             rows = db.execute(
-                """SELECT kb.id, kb.question, kb.answer, kb.category, kb.tags,
+                f"""SELECT kb.id, kb.question, kb.answer, kb.category, kb.tags,
                           kb.confidence, kb.scope,
                           rank AS fts_rank
                    FROM kb_fts
                    JOIN knowledge_base kb ON kb.id = kb_fts.rowid
                    WHERE kb_fts MATCH ?
                      AND kb.status = 'verified'
+                     AND kb.scope IN ({placeholders})
                    ORDER BY rank
                    LIMIT ?""",
-                (safe_query, limit),
+                (safe_query, *accessible_scopes, limit),
             ).fetchall()
 
             return [
@@ -99,19 +112,20 @@ def search_knowledge(query: str, limit: int = 3) -> list[dict]:
         return []
 
 
-def build_knowledge_context(query: str) -> str | None:
+def build_knowledge_context(query: str, user_roles: list[str] = None) -> tuple[str | None, str, list[int]]:
     """Build structured knowledge context for injection into the prompt.
 
-    Returns None if no relevant knowledge found or question is purely dynamic.
+    Returns (context_str | None, route_decision, matched_kb_ids).
     """
     route = route_question(query)
 
     if route == "dynamic":
-        return None
+        return None, route, []
 
-    results = search_knowledge(query)
+    results = search_knowledge(query, user_roles=user_roles)
+    kb_ids = [r["id"] for r in results]
     if not results:
-        return None
+        return None, route, kb_ids
 
     lines = [
         "\n## Retrieved Knowledge (reference only — do NOT use cached numbers, always query live data)",
@@ -122,7 +136,7 @@ def build_knowledge_context(query: str) -> str | None:
             f"Q: {r['question']}\n    A: {r['answer']}"
         )
 
-    return "\n".join(lines)
+    return "\n".join(lines), route, kb_ids
 
 
 def log_retrieval(

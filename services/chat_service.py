@@ -46,12 +46,16 @@ def _load_system_prompt(user_ctx: UserContext, page_context: dict = None) -> str
     return base_prompt + user_info + page_info
 
 
-def _enrich_prompt_with_knowledge(prompt: str, user_message: str) -> str:
-    """Inject relevant knowledge context into the prompt if available."""
-    knowledge_ctx = build_knowledge_context(user_message)
+def _enrich_prompt_with_knowledge(prompt: str, user_message: str, user_ctx: UserContext = None) -> tuple[str, str, list[int]]:
+    """Inject relevant knowledge context into the prompt if available.
+
+    Returns (enriched_prompt, route_decision, matched_kb_ids).
+    """
+    user_roles = user_ctx.roles if user_ctx else None
+    knowledge_ctx, route, kb_ids = build_knowledge_context(user_message, user_roles=user_roles)
     if knowledge_ctx:
-        return prompt + knowledge_ctx
-    return prompt
+        return prompt + knowledge_ctx, route, kb_ids
+    return prompt, route, kb_ids
 
 
 def _get_conversation_history(conversation_id: str, user_id: int, limit: int = 10) -> list[dict]:
@@ -166,7 +170,10 @@ async def chat(
 
     full_prompt = _build_full_prompt(request.message, request.conversation_id, user_ctx.user_id)
     system_prompt = _load_system_prompt(user_ctx, clean_page_ctx)
-    system_prompt = _enrich_prompt_with_knowledge(system_prompt, request.message)
+    system_prompt, route, kb_ids = _enrich_prompt_with_knowledge(system_prompt, request.message, user_ctx)
+
+    # Log retrieval for feedback loop
+    log_retrieval(request.message, kb_ids, route)
 
     # Save user message
     _save_message(conversation_id, user_msg_id, "user", request.message, user_ctx)
@@ -230,7 +237,10 @@ async def chat_stream(
     clean_page_ctx = sanitize_page_context(request.page_context) if request.page_context else None
     full_prompt = _build_full_prompt(request.message, request.conversation_id, user_ctx.user_id)
     system_prompt = _load_system_prompt(user_ctx, clean_page_ctx)
-    system_prompt = _enrich_prompt_with_knowledge(system_prompt, request.message)
+    system_prompt, route, kb_ids = _enrich_prompt_with_knowledge(system_prompt, request.message, user_ctx)
+
+    # Log retrieval for feedback loop
+    log_retrieval(request.message, kb_ids, route)
 
     # Save user message
     _save_message(conversation_id, user_msg_id, "user", request.message, user_ctx)

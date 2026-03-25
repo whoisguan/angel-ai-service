@@ -61,6 +61,8 @@ class UsageStats(BaseModel):
 class FeedbackRequest(BaseModel):
     message_id: str
     rating: str = Field(..., pattern="^(helpful|not_helpful|wrong|harmful)$")
+    accuracy: Optional[str] = Field(None, pattern="^(correct|incorrect|partial)$")
+    resolved: Optional[bool] = None
     comment: Optional[str] = None
 
 
