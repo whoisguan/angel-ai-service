@@ -85,18 +85,18 @@ async def submit_feedback(
             (body.message_id, body.rating, body.comment, now),
         )
 
-        # Link feedback to retrieval event if accuracy/resolved provided
+        # Link feedback to retrieval event via message_id (traceable)
+        retrieval_linked = False
         if body.accuracy or body.resolved is not None:
             feedback_val = body.accuracy or ("resolved" if body.resolved else "unresolved")
-            db.execute(
+            cursor = db.execute(
                 """UPDATE retrieval_feedback
                    SET user_feedback = ?
-                   WHERE id = (
-                       SELECT id FROM retrieval_feedback
-                       WHERE created_at >= datetime(?, '-5 minutes')
-                       ORDER BY created_at DESC LIMIT 1
-                   )""",
-                (feedback_val, now),
+                   WHERE message_id = ?""",
+                (feedback_val, body.message_id),
             )
+            retrieval_linked = cursor.rowcount > 0
+            if not retrieval_linked:
+                logger.warning(f"Feedback for message {body.message_id}: no matching retrieval_feedback row")
 
-    return {"status": "recorded"}
+    return {"status": "recorded", "retrieval_linked": retrieval_linked if (body.accuracy or body.resolved is not None) else None}

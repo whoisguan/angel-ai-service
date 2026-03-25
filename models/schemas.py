@@ -73,3 +73,21 @@ class HealthResponse(BaseModel):
     version: str
     cli_available: bool
     uptime_seconds: int
+
+
+# --- Prompt Versioning ---
+
+class PromptVersionCreate(BaseModel):
+    version_tag: str = Field(..., min_length=1, max_length=50)
+    content: str = Field(..., min_length=10)
+    description: Optional[str] = None
+    activate: bool = False  # if True, immediately set as active
+
+
+class PromptVersionResponse(BaseModel):
+    id: int
+    version_tag: str
+    description: Optional[str]
+    is_active: bool
+    created_at: str
+    created_by: Optional[str]

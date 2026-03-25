@@ -4,11 +4,11 @@ import asyncio
 import time
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from config import settings
 from db.sqlite_db import get_db
-from models.schemas import HealthResponse, UsageStats
+from models.schemas import HealthResponse, UsageStats, PromptVersionCreate, PromptVersionResponse
 from security.auth import verify_service_token
 
 router = APIRouter(tags=["admin"])
@@ -80,3 +80,75 @@ async def get_usage(
         avg_duration_ms=int(row["avg_duration_ms"]),
         unique_users=row["unique_users"],
     )
+
+
+# ---------------------------------------------------------------------------
+# Prompt Version Management (admin only)
+# ---------------------------------------------------------------------------
+
+@router.get("/api/ai/prompts", response_model=list[PromptVersionResponse])
+async def list_prompts(
+    _token: str = Depends(verify_service_token),
+):
+    """List all prompt versions."""
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT id, version_tag, description, is_active, created_at, created_by FROM prompt_versions ORDER BY created_at DESC"
+        ).fetchall()
+    return [
+        PromptVersionResponse(
+            id=r["id"], version_tag=r["version_tag"], description=r["description"],
+            is_active=bool(r["is_active"]), created_at=r["created_at"], created_by=r["created_by"],
+        )
+        for r in rows
+    ]
+
+
+@router.post("/api/ai/prompts", response_model=PromptVersionResponse, status_code=201)
+async def create_prompt(
+    body: PromptVersionCreate,
+    _token: str = Depends(verify_service_token),
+):
+    """Create a new prompt version. Optionally activate it."""
+    now = datetime.now(timezone.utc).isoformat()
+    with get_db() as db:
+        # Check duplicate version_tag
+        existing = db.execute(
+            "SELECT id FROM prompt_versions WHERE version_tag = ?", (body.version_tag,)
+        ).fetchone()
+        if existing:
+            raise HTTPException(status_code=409, detail=f"Version tag '{body.version_tag}' already exists")
+
+        if body.activate:
+            # Transactional: deactivate all, then activate new one
+            db.execute("UPDATE prompt_versions SET is_active = 0 WHERE is_active = 1")
+
+        cursor = db.execute(
+            """INSERT INTO prompt_versions (version_tag, content, description, is_active, created_at, created_by)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (body.version_tag, body.content, body.description, 1 if body.activate else 0, now, "admin"),
+        )
+        new_id = cursor.lastrowid
+
+    return PromptVersionResponse(
+        id=new_id, version_tag=body.version_tag, description=body.description,
+        is_active=body.activate, created_at=now, created_by="admin",
+    )
+
+
+@router.put("/api/ai/prompts/{prompt_id}/activate")
+async def activate_prompt(
+    prompt_id: int,
+    _token: str = Depends(verify_service_token),
+):
+    """Activate a specific prompt version (deactivates all others)."""
+    with get_db() as db:
+        target = db.execute("SELECT id, version_tag FROM prompt_versions WHERE id = ?", (prompt_id,)).fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="Prompt version not found")
+
+        # Transactional: deactivate all, activate target
+        db.execute("UPDATE prompt_versions SET is_active = 0 WHERE is_active = 1")
+        db.execute("UPDATE prompt_versions SET is_active = 1 WHERE id = ?", (prompt_id,))
+
+    return {"status": "activated", "version_tag": target["version_tag"]}

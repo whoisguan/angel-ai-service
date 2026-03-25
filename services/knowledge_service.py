@@ -1,11 +1,14 @@
-"""Knowledge service — FTS5 search, question routing, and structured context injection."""
+"""Knowledge service — FTS5 search, question routing, structured context injection, and retrieval caching."""
 
+import hashlib
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from db.sqlite_db import get_db
+
+CACHE_TTL_DAYS = 7
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +61,153 @@ def route_question(query: str) -> str:
     return "dynamic"
 
 
+def _build_scope_key(user_roles: list[str] = None) -> str:
+    """Build a deterministic scope key from user roles."""
+    accessible_scopes = _get_accessible_scopes(user_roles)
+    return "|".join(sorted(accessible_scopes))
+
+
+def _get_accessible_scopes(user_roles: list[str] = None) -> list[str]:
+    """Determine accessible scopes based on user roles."""
+    accessible_scopes = ["all"]
+    if user_roles:
+        if any(r in ("admin", "ROLE_SUPER_ADMIN", "ROLE_ADMIN") for r in user_roles):
+            accessible_scopes.extend(["admin", "store_manager", "employee"])
+        elif any(r in ("store_manager", "ROLE_STORE_MANAGER") for r in user_roles):
+            accessible_scopes.extend(["store_manager", "employee"])
+        else:
+            accessible_scopes.append("employee")
+    return accessible_scopes
+
+
+def _make_cache_key(query: str, scope_key: str) -> str:
+    """Create a deterministic cache key from query + scope."""
+    normalized = query.lower().strip()
+    raw = f"{normalized}|{scope_key}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:32]
+
+
+def _get_cached_results(cache_key: str, user_roles: list[str] = None) -> list[dict] | None:
+    """Check retrieval cache. Returns cached KB results or None on miss.
+
+    Re-validates scope on read to handle KB scope changes between cache write and read.
+    Preserves original ranking order from kb_ids.
+    """
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        with get_db() as db:
+            row = db.execute(
+                "SELECT kb_ids, kb_scores FROM retrieval_cache WHERE cache_key = ? AND expires_at > ?",
+                (cache_key, now),
+            ).fetchone()
+            if not row:
+                return None
+
+            kb_ids = json.loads(row["kb_ids"])
+            kb_scores = json.loads(row["kb_scores"])
+
+            if not kb_ids:
+                return []
+
+            # Re-validate: fetch only entries still verified AND within current scope
+            accessible_scopes = _get_accessible_scopes(user_roles)
+            id_placeholders = ",".join(["?"] * len(kb_ids))
+            scope_placeholders = ",".join(["?"] * len(accessible_scopes))
+            rows = db.execute(
+                f"""SELECT id, question, answer, category, tags, confidence
+                    FROM knowledge_base
+                    WHERE id IN ({id_placeholders})
+                      AND status = 'verified'
+                      AND scope IN ({scope_placeholders})""",
+                (*kb_ids, *accessible_scopes),
+            ).fetchall()
+
+            # Rebuild results preserving original kb_ids order
+            score_map = dict(zip(kb_ids, kb_scores))
+            row_map = {r["id"]: r for r in rows}
+            results = []
+            for kid in kb_ids:
+                r = row_map.get(kid)
+                if r:
+                    results.append({
+                        "id": r["id"],
+                        "question": r["question"],
+                        "answer": r["answer"],
+                        "category": r["category"],
+                        "tags": r["tags"],
+                        "confidence": r["confidence"],
+                        "score": score_map.get(kid, 0),
+                    })
+
+            # Update hit count
+            db.execute("UPDATE retrieval_cache SET hit_count = hit_count + 1 WHERE cache_key = ?", (cache_key,))
+
+            return results
+    except Exception as e:
+        logger.debug(f"Cache lookup failed: {e}")
+        return None
+
+
+def _store_cache(cache_key: str, query: str, scope_key: str, results: list[dict]):
+    """Store FTS5 retrieval results in cache."""
+    try:
+        now = datetime.now(timezone.utc)
+        expires = (now + timedelta(days=CACHE_TTL_DAYS)).isoformat()
+        kb_ids = [r["id"] for r in results]
+        kb_scores = [r["score"] for r in results]
+
+        with get_db() as db:
+            db.execute(
+                """INSERT OR REPLACE INTO retrieval_cache
+                   (cache_key, query, scope_key, kb_ids, kb_scores, hit_count, created_at, expires_at)
+                   VALUES (?, ?, ?, ?, ?, 0, ?, ?)""",
+                (cache_key, query, scope_key, json.dumps(kb_ids), json.dumps(kb_scores), now.isoformat(), expires),
+            )
+    except Exception as e:
+        logger.debug(f"Cache store failed: {e}")
+
+
+def invalidate_cache_for_kb(kb_id: int = None):
+    """Invalidate cache entries. If kb_id given, only entries containing that id; otherwise all."""
+    try:
+        with get_db() as db:
+            if kb_id is not None:
+                # Use json_each for indexed single-query deletion (no full table scan)
+                db.execute(
+                    """DELETE FROM retrieval_cache
+                       WHERE id IN (
+                           SELECT rc.id FROM retrieval_cache rc, json_each(rc.kb_ids) je
+                           WHERE je.value = ?
+                       )""",
+                    (kb_id,),
+                )
+            else:
+                db.execute("DELETE FROM retrieval_cache")
+    except Exception as e:
+        logger.warning(f"Cache invalidation failed: {e}")
+
+
+def cleanup_expired_cache():
+    """Remove expired cache entries."""
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        with get_db() as db:
+            db.execute("DELETE FROM retrieval_cache WHERE expires_at <= ?", (now,))
+    except Exception as e:
+        logger.debug(f"Cache cleanup failed: {e}")
+
+
 def search_knowledge(query: str, user_roles: list[str] = None, limit: int = 3) -> list[dict]:
-    """Search the knowledge base using FTS5. Returns only verified entries matching user scope."""
+    """Search the knowledge base using FTS5 with caching. Returns only verified entries matching user scope."""
+    scope_key = _build_scope_key(user_roles)
+    cache_key = _make_cache_key(query, scope_key)
+
+    # Check cache first (re-validates scope on read)
+    cached = _get_cached_results(cache_key, user_roles=user_roles)
+    if cached is not None:
+        logger.debug(f"Cache hit for query: {query[:50]}...")
+        return cached[:limit]
+
     try:
         with get_db() as db:
             # Check if FTS table has content
@@ -70,16 +218,7 @@ def search_knowledge(query: str, user_roles: list[str] = None, limit: int = 3) -
             # Escape FTS5 operators by quoting the query as a phrase
             safe_query = '"' + query.replace('"', '""') + '"'
 
-            # Determine accessible scopes based on user roles
-            accessible_scopes = ["all"]
-            if user_roles:
-                if any(r in ("admin", "ROLE_SUPER_ADMIN", "ROLE_ADMIN") for r in user_roles):
-                    accessible_scopes.extend(["admin", "store_manager", "employee"])
-                elif any(r in ("store_manager", "ROLE_STORE_MANAGER") for r in user_roles):
-                    accessible_scopes.extend(["store_manager", "employee"])
-                else:
-                    accessible_scopes.append("employee")
-
+            accessible_scopes = _get_accessible_scopes(user_roles)
             placeholders = ",".join(["?"] * len(accessible_scopes))
             rows = db.execute(
                 f"""SELECT kb.id, kb.question, kb.answer, kb.category, kb.tags,
@@ -95,7 +234,7 @@ def search_knowledge(query: str, user_roles: list[str] = None, limit: int = 3) -
                 (safe_query, *accessible_scopes, limit),
             ).fetchall()
 
-            return [
+            results = [
                 {
                     "id": r["id"],
                     "question": r["question"],
@@ -103,10 +242,16 @@ def search_knowledge(query: str, user_roles: list[str] = None, limit: int = 3) -
                     "category": r["category"],
                     "tags": r["tags"],
                     "confidence": r["confidence"],
-                    "score": round(-r["fts_rank"], 2),  # FTS5 rank is negative; invert for readability
+                    "score": round(-r["fts_rank"], 2),
                 }
                 for r in rows
             ]
+
+            # Cache results (only for static route queries with results)
+            if results:
+                _store_cache(cache_key, query, scope_key, results)
+
+            return results
     except Exception as e:
         logger.warning(f"Knowledge search failed: {e}")
         return []
@@ -146,15 +291,16 @@ def log_retrieval(
     feedback: str = None,
     prompt_version: str = None,
     mcp_tools: list[str] = None,
-):
-    """Log a retrieval event for the feedback loop."""
+    message_id: str = None,
+) -> int | None:
+    """Log a retrieval event for the feedback loop. Returns the event id."""
     try:
         now = datetime.now(timezone.utc).isoformat()
         with get_db() as db:
-            db.execute(
+            cursor = db.execute(
                 """INSERT INTO retrieval_feedback
-                   (query, retrieved_kb_ids, route_decision, user_feedback, prompt_version, mcp_tools_used, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   (query, retrieved_kb_ids, route_decision, user_feedback, prompt_version, mcp_tools_used, message_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     query,
                     json.dumps(kb_ids) if kb_ids else None,
@@ -162,8 +308,11 @@ def log_retrieval(
                     feedback,
                     prompt_version,
                     json.dumps(mcp_tools) if mcp_tools else None,
+                    message_id,
                     now,
                 ),
             )
+            return cursor.lastrowid
     except Exception as e:
         logger.warning(f"Failed to log retrieval: {e}")
+        return None

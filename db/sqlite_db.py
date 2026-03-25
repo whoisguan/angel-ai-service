@@ -1,11 +1,14 @@
-"""SQLite database for conversation history, feedback, and usage tracking."""
+"""SQLite database for conversation history, feedback, usage tracking, and knowledge base."""
 
+import logging
 import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 
 def _ensure_db_dir():
@@ -123,11 +126,39 @@ def init_db():
                 user_feedback TEXT CHECK(user_feedback IN ('correct','incorrect','partial','resolved','unresolved')),
                 prompt_version TEXT,
                 mcp_tools_used TEXT,
+                message_id TEXT,
                 created_at TEXT NOT NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_rf_feedback
                 ON retrieval_feedback(user_feedback, created_at);
+
+            -- Prompt versions for versioned system prompts
+            CREATE TABLE IF NOT EXISTS prompt_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                version_tag TEXT NOT NULL UNIQUE,
+                content TEXT NOT NULL,
+                description TEXT,
+                is_active INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                created_by TEXT
+            );
+
+            -- Retrieval cache for FTS5 results (scoped)
+            CREATE TABLE IF NOT EXISTS retrieval_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cache_key TEXT NOT NULL UNIQUE,
+                query TEXT NOT NULL,
+                scope_key TEXT NOT NULL,
+                kb_ids TEXT NOT NULL,
+                kb_scores TEXT NOT NULL,
+                hit_count INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_rc_expires
+                ON retrieval_cache(expires_at);
         """)
         # FTS5 virtual table for knowledge base search (separate statement)
         conn.execute("""
@@ -151,6 +182,21 @@ def init_db():
                 VALUES (NEW.id, NEW.question, NEW.answer, NEW.tags);
             END;
         """)
+        # Migrations: add columns to existing tables (safe for both new and existing DBs)
+        _migrate_add_column(conn, "retrieval_feedback", "message_id", "TEXT")
+
+        # Create indexes that depend on migrated columns (must run AFTER ALTER TABLE)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_rf_message ON retrieval_feedback(message_id)")
+
         conn.commit()
     finally:
         conn.close()
+
+
+def _migrate_add_column(conn: sqlite3.Connection, table: str, column: str, col_type: str):
+    """Safely add a column to an existing table. No-op if column already exists."""
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+        logger.info(f"Migration: added {column} to {table}")
+    except sqlite3.OperationalError:
+        pass  # column already exists

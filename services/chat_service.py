@@ -18,14 +18,35 @@ from services.knowledge_service import build_knowledge_context, route_question, 
 logger = logging.getLogger(__name__)
 
 
-def _load_system_prompt(user_ctx: UserContext, page_context: dict = None) -> str:
-    """Load and personalize the system prompt."""
-    prompt_path = settings.SYSTEM_PROMPT_PATH
-    if os.path.exists(prompt_path):
-        with open(prompt_path, "r", encoding="utf-8") as f:
-            base_prompt = f.read()
-    else:
-        base_prompt = "You are an AI assistant for Angel Mercatone KPI system."
+def _load_system_prompt(user_ctx: UserContext, page_context: dict = None) -> tuple[str, str | None]:
+    """Load and personalize the system prompt.
+
+    Priority: DB active version > file on disk > hardcoded fallback.
+    Returns (full_prompt, version_tag | None).
+    """
+    base_prompt = None
+    version_tag = None
+
+    # Try loading from prompt_versions table (active version)
+    try:
+        with get_db() as db:
+            row = db.execute(
+                "SELECT version_tag, content FROM prompt_versions WHERE is_active = 1 LIMIT 1"
+            ).fetchone()
+            if row:
+                base_prompt = row["content"]
+                version_tag = row["version_tag"]
+    except Exception:
+        logger.debug("Failed to load prompt from DB, falling back to file")
+
+    # Fallback to file
+    if base_prompt is None:
+        prompt_path = settings.SYSTEM_PROMPT_PATH
+        if os.path.exists(prompt_path):
+            with open(prompt_path, "r", encoding="utf-8") as f:
+                base_prompt = f.read()
+        else:
+            base_prompt = "You are an AI assistant for Angel Mercatone KPI system."
 
     # Inject user context
     user_info = (
@@ -43,7 +64,7 @@ def _load_system_prompt(user_ctx: UserContext, page_context: dict = None) -> str
         for key, value in page_context.items():
             page_info += f"- {key}: {value}\n"
 
-    return base_prompt + user_info + page_info
+    return base_prompt + user_info + page_info, version_tag
 
 
 def _enrich_prompt_with_knowledge(prompt: str, user_message: str, user_ctx: UserContext = None) -> tuple[str, str, list[int]]:
@@ -169,11 +190,8 @@ async def chat(
     clean_page_ctx = sanitize_page_context(request.page_context) if request.page_context else None
 
     full_prompt = _build_full_prompt(request.message, request.conversation_id, user_ctx.user_id)
-    system_prompt = _load_system_prompt(user_ctx, clean_page_ctx)
+    system_prompt, prompt_version = _load_system_prompt(user_ctx, clean_page_ctx)
     system_prompt, route, kb_ids = _enrich_prompt_with_knowledge(system_prompt, request.message, user_ctx)
-
-    # Log retrieval for feedback loop
-    log_retrieval(request.message, kb_ids, route)
 
     # Save user message
     _save_message(conversation_id, user_msg_id, "user", request.message, user_ctx)
@@ -197,6 +215,9 @@ async def chat(
         conversation_id, ai_msg_id, "assistant", clean_content, user_ctx,
         cost_usd=result.cost_usd, duration_ms=result.duration_ms, model=result.model,
     )
+
+    # Log retrieval with message_id for traceability
+    log_retrieval(request.message, kb_ids, route, prompt_version=prompt_version, message_id=ai_msg_id)
 
     msg = ChatMessage(
         message_id=ai_msg_id,
@@ -236,11 +257,8 @@ async def chat_stream(
 
     clean_page_ctx = sanitize_page_context(request.page_context) if request.page_context else None
     full_prompt = _build_full_prompt(request.message, request.conversation_id, user_ctx.user_id)
-    system_prompt = _load_system_prompt(user_ctx, clean_page_ctx)
+    system_prompt, prompt_version = _load_system_prompt(user_ctx, clean_page_ctx)
     system_prompt, route, kb_ids = _enrich_prompt_with_knowledge(system_prompt, request.message, user_ctx)
-
-    # Log retrieval for feedback loop
-    log_retrieval(request.message, kb_ids, route)
 
     # Save user message
     _save_message(conversation_id, user_msg_id, "user", request.message, user_ctx)
@@ -294,6 +312,8 @@ async def chat_stream(
                     conversation_id, ai_msg_id, "assistant", clean_content, user_ctx,
                     cost_usd=cost_usd, duration_ms=duration_ms, model=model,
                 )
+                # Log retrieval with message_id for traceability
+                log_retrieval(request.message, kb_ids, route, prompt_version=prompt_version, message_id=ai_msg_id)
             except Exception:
                 logger.exception("Failed to save assistant message after stream")
 
