@@ -16,7 +16,6 @@ def mock_settings():
     s.SERVICE_TOKEN_SECRET = "test-secret-token"
     s.CLAUDE_CLI_PATH = "claude"
     s.CLAUDE_MODEL = "sonnet"
-    s.CLAUDE_FALLBACK_MODEL = "haiku"
     s.CLAUDE_MAX_BUDGET_USD = 0.50
     s.CLAUDE_PERMISSION_MODE = "bypassPermissions"
     s.CLAUDE_TIMEOUT_SECONDS = 120
@@ -26,6 +25,7 @@ def mock_settings():
     s.BI_SQLSERVER_URL = ""
     s.MAX_REQUESTS_PER_USER_PER_DAY = 100
     s.MAX_CONCURRENT_REQUESTS = 3
+    s.DAILY_LIMIT_TIMEZONE = "Europe/Rome"
     s.SQLITE_DB_PATH = ":memory:"
     return s
 

@@ -5,7 +5,10 @@ Checks user input BEFORE sending to Claude CLI.
 
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Optional
+
+from db.sqlite_db import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -35,16 +38,34 @@ INJECTION_PATTERNS = [
 _compiled = [re.compile(p, re.IGNORECASE) for p in INJECTION_PATTERNS]
 
 
-def check_input(text: str) -> Optional[str]:
+def check_input(text: str, user_id: int = None, source_system: str = None) -> Optional[str]:
     """Check user input for prompt injection patterns.
 
     Returns None if safe, or the matched pattern name if suspicious.
+    Logs rejection to rejected_queries table for observability.
     """
     for i, pattern in enumerate(_compiled):
         if pattern.search(text):
             logger.warning(f"Prompt injection detected: pattern #{i} matched in input")
-            return INJECTION_PATTERNS[i]
+            matched = INJECTION_PATTERNS[i]
+            _log_rejection(user_id, source_system, "injection", text[:100], matched)
+            return matched
     return None
+
+
+def _log_rejection(user_id: int = None, source_system: str = None, reason: str = "injection",
+                   query_preview: str = None, details: str = None):
+    """Log a rejected query for observability."""
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        with get_db() as db:
+            db.execute(
+                """INSERT INTO rejected_queries (user_id, source_system, reason, query_preview, details, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (user_id, source_system, reason, query_preview, details, now),
+            )
+    except Exception:
+        pass  # logging failure should never block the request
 
 
 def sanitize_page_context(page_context: dict) -> dict:

@@ -188,9 +188,8 @@ async def chat(
     ai_msg_id = claude_cli.generate_message_id()
 
     # Input validation — block if injection detected (C1 fix)
-    injection = check_input(request.message)
+    injection = check_input(request.message, user_id=user_ctx.user_id, source_system=user_ctx.source_system)
     if injection:
-        logger.warning(f"Injection attempt by user {user_ctx.user_id}: {injection}")
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="Your message was blocked by our safety filter.")
 

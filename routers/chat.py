@@ -34,9 +34,8 @@ async def chat_endpoint(
     try:
         if request.stream:
             # Pre-flight checks for streaming (must happen before first yield)
-            injection = check_input(request.message)
+            injection = check_input(request.message, user_id=user_ctx.user_id, source_system=user_ctx.source_system)
             if injection:
-                logger.warning(f"Injection attempt by user {user_ctx.user_id}: {injection}")
                 raise HTTPException(status_code=400, detail="Your message was blocked by our safety filter.")
 
             check_daily_limit(user_ctx.user_id, user_ctx.source_system)

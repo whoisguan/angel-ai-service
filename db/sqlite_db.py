@@ -192,6 +192,34 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_um_user_active
                 ON user_memories(user_id, source_system, is_deleted, expires_at);
 
+            -- Knowledge base audit trail (Phase 3)
+            CREATE TABLE IF NOT EXISTS kb_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kb_id INTEGER NOT NULL,
+                action TEXT NOT NULL CHECK(action IN ('created','verified','archived','updated','deleted')),
+                old_status TEXT,
+                new_status TEXT,
+                changed_by TEXT,
+                changed_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_kba_kb
+                ON kb_audit_log(kb_id, changed_at);
+
+            -- Rejected queries log (injection/rate-limit)
+            CREATE TABLE IF NOT EXISTS rejected_queries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                source_system TEXT,
+                reason TEXT NOT NULL CHECK(reason IN ('injection','rate_limit_daily','rate_limit_concurrent')),
+                query_preview TEXT,
+                details TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_rq_date
+                ON rejected_queries(created_at);
+
             CREATE UNIQUE INDEX IF NOT EXISTS idx_um_user_key_active
                 ON user_memories(user_id, source_system, memory_key) WHERE is_deleted = 0;
         """)

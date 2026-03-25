@@ -1,8 +1,12 @@
 """AI Service configuration — loaded from environment variables."""
 
-from pydantic_settings import BaseSettings
-from typing import Optional
+import os
+from pathlib import Path
 
+from pydantic_settings import BaseSettings
+
+# Project root (directory containing this file)
+_PROJECT_ROOT = Path(__file__).parent
 
 class Settings(BaseSettings):
     # Service identity
@@ -19,13 +23,12 @@ class Settings(BaseSettings):
     # Claude CLI settings
     CLAUDE_CLI_PATH: str = "claude"  # assumes claude is in PATH
     CLAUDE_MODEL: str = "sonnet"  # default model; can be "opus", "haiku", "sonnet"
-    CLAUDE_FALLBACK_MODEL: Optional[str] = "haiku"
     CLAUDE_MAX_BUDGET_USD: float = 0.50  # per-request safety cap
     CLAUDE_PERMISSION_MODE: str = "bypassPermissions"  # for automation
     CLAUDE_TIMEOUT_SECONDS: int = 120
 
     # MCP Server
-    MCP_SERVER_SCRIPT: str = "C:/Projects/angel-ai-service/mcp_server.py"
+    MCP_SERVER_SCRIPT: str = str(_PROJECT_ROOT / "mcp_server.py")
     MCP_PYTHON_PATH: str = "python"
 
     # KPI Database (read-only, for MCP Server)
@@ -36,11 +39,14 @@ class Settings(BaseSettings):
     MAX_REQUESTS_PER_USER_PER_DAY: int = 100
     MAX_CONCURRENT_REQUESTS: int = 3
 
+    # Timezone for daily limit reset (Europe/Rome for Italian workplace)
+    DAILY_LIMIT_TIMEZONE: str = "Europe/Rome"
+
     # SQLite for conversation history & usage tracking
-    SQLITE_DB_PATH: str = "C:/Projects/angel-ai-service/data/ai_service.db"
+    SQLITE_DB_PATH: str = str(_PROJECT_ROOT / "data" / "ai_service.db")
 
     # System prompt
-    SYSTEM_PROMPT_PATH: str = "C:/Projects/angel-ai-service/prompts/system_prompt.txt"
+    SYSTEM_PROMPT_PATH: str = str(_PROJECT_ROOT / "prompts" / "system_prompt.txt")
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
