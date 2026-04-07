@@ -153,6 +153,10 @@ async def query(
             json_schema_path=json_schema_path,
         )
 
+        import logging
+        _log = logging.getLogger(__name__)
+        _log.info(f"CLI cmd[0:3]: {cmd[:3]}, cwd: {os.path.dirname(settings.MCP_SERVER_SCRIPT)}, PATH snippet: {os.environ.get('PATH','')[:200]}")
+
         def _run_cli():
             return subprocess.run(
                 cmd,
