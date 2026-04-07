@@ -24,6 +24,22 @@ from config import settings
 # On Windows, .cmd/.bat files need shell=True for subprocess.run/Popen
 _IS_WINDOWS = platform.system() == "Windows"
 
+def _resolve_cli_executable() -> list[str]:
+    """Resolve Claude CLI to a directly executable command.
+
+    On Windows, .cmd wrappers use cmd.exe which has an 8191 char command line
+    limit — too short for system prompts. We bypass it by calling node + cli.js
+    directly.
+    """
+    cli_path = settings.CLAUDE_CLI_PATH
+    if _IS_WINDOWS and cli_path.endswith((".cmd", ".bat")):
+        from pathlib import Path
+        cli_js = Path(cli_path).parent / "node_modules" / "@anthropic-ai" / "claude-code" / "cli.js"
+        if cli_js.exists():
+            return ["node", str(cli_js)]
+    return [cli_path]
+
+
 def _get_env():
     """Build subprocess env, ensuring node/npm/python are in PATH on Windows."""
     env = os.environ.copy()
@@ -92,8 +108,9 @@ def _build_command(
     json_schema_path: str = None,
 ) -> list[str]:
     """Build the claude CLI command arguments."""
+    executable = _resolve_cli_executable()
     cmd = [
-        settings.CLAUDE_CLI_PATH,
+        *executable,
         "-p", prompt,
         "--output-format", output_format,
         "--no-session-persistence",
