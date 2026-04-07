@@ -92,11 +92,8 @@ def _build_command(
     json_schema_path: str = None,
 ) -> list[str]:
     """Build the claude CLI command arguments."""
-    cli_path = settings.CLAUDE_CLI_PATH
-    # On Windows, .cmd files need cmd.exe /c to execute via subprocess
-    prefix = ["cmd", "/c", cli_path] if _IS_WINDOWS and cli_path.endswith((".cmd", ".bat")) else [cli_path]
     cmd = [
-        *prefix,
+        settings.CLAUDE_CLI_PATH,
         "-p", prompt,
         "--output-format", output_format,
         "--no-session-persistence",
