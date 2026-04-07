@@ -173,7 +173,7 @@ async def query(
                 stderr=subprocess.PIPE,
                 cwd=os.path.dirname(settings.MCP_SERVER_SCRIPT),
                 timeout=settings.CLAUDE_TIMEOUT_SECONDS,
-                shell=_IS_WINDOWS,
+                shell=False,
                 env=_get_env(),
             )
 
@@ -253,7 +253,7 @@ async def stream(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=os.path.dirname(settings.MCP_SERVER_SCRIPT),
-                shell=_IS_WINDOWS,
+                shell=False,
                 env=_get_env(),
             )
             try:
