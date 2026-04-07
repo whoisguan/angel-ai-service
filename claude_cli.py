@@ -2,12 +2,19 @@
 
 Calls `claude -p` in headless mode, using Max subscription.
 Supports both synchronous JSON and streaming NDJSON output.
+
+Windows compatibility: uses subprocess.Popen + threading instead of
+asyncio.create_subprocess_exec, which raises NotImplementedError on
+Windows uvicorn's SelectorEventLoop.
 """
 
 import asyncio
 import json
 import os
+import queue
+import subprocess
 import tempfile
+import threading
 import uuid
 from typing import AsyncIterator, Optional
 
@@ -142,34 +149,31 @@ async def query(
             json_schema_path=json_schema_path,
         )
 
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=os.path.dirname(settings.MCP_SERVER_SCRIPT),
-        )
-
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(),
+        def _run_cli():
+            return subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=os.path.dirname(settings.MCP_SERVER_SCRIPT),
                 timeout=settings.CLAUDE_TIMEOUT_SECONDS,
             )
-        except asyncio.TimeoutError:
-            process.kill()
-            await process.wait()
+
+        try:
+            proc = await asyncio.to_thread(_run_cli)
+        except subprocess.TimeoutExpired:
             raise CLIError(
                 f"Claude CLI timed out after {settings.CLAUDE_TIMEOUT_SECONDS}s",
                 exit_code=-1,
             )
 
-        if process.returncode != 0:
+        if proc.returncode != 0:
             raise CLIError(
-                f"Claude CLI exited with code {process.returncode}",
-                stderr=stderr.decode("utf-8", errors="replace"),
-                exit_code=process.returncode,
+                f"Claude CLI exited with code {proc.returncode}",
+                stderr=proc.stderr.decode("utf-8", errors="replace"),
+                exit_code=proc.returncode,
             )
 
-        raw = json.loads(stdout.decode("utf-8"))
+        raw = json.loads(proc.stdout.decode("utf-8"))
         result = CLIResult(raw)
 
         if result.is_error:
@@ -220,29 +224,46 @@ async def stream(
             max_budget=max_budget,
         )
 
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=os.path.dirname(settings.MCP_SERVER_SCRIPT),
-        )
+        _SENTINEL = None
+        line_q: queue.Queue = queue.Queue()
+
+        def _reader():
+            """Run subprocess in a thread, push stdout lines to queue."""
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=os.path.dirname(settings.MCP_SERVER_SCRIPT),
+            )
+            try:
+                for raw_line in proc.stdout:
+                    line_q.put(raw_line)
+                line_q.put(_SENTINEL)
+            except Exception as exc:
+                line_q.put(exc)
+            finally:
+                proc.wait()
+
+        reader_thread = threading.Thread(target=_reader, daemon=True)
+        reader_thread.start()
 
         try:
             while True:
                 try:
-                    line = await asyncio.wait_for(
-                        process.stdout.readline(),
-                        timeout=settings.CLAUDE_TIMEOUT_SECONDS,
+                    item = await asyncio.to_thread(
+                        line_q.get, timeout=settings.CLAUDE_TIMEOUT_SECONDS,
                     )
-                except asyncio.TimeoutError:
-                    process.kill()
+                except Exception:
                     yield {"type": "error", "message": "Stream timeout"}
                     return
 
-                if not line:
+                if item is _SENTINEL:
                     break
+                if isinstance(item, Exception):
+                    yield {"type": "error", "message": str(item)}
+                    return
 
-                line_str = line.decode("utf-8").strip()
+                line_str = item.decode("utf-8").strip()
                 if not line_str:
                     continue
 
@@ -257,7 +278,6 @@ async def stream(
                     yield {"type": "init", "session_id": event.get("session_id", "")}
 
                 elif event_type == "assistant":
-                    # Extract text content from assistant message
                     message = event.get("message", {})
                     for block in message.get("content", []):
                         if block.get("type") == "text":
@@ -278,9 +298,7 @@ async def stream(
                     }
 
         finally:
-            if process.returncode is None:
-                process.kill()
-            await process.wait()
+            reader_thread.join(timeout=5)
 
     finally:
         if mcp_config_path and os.path.exists(mcp_config_path):

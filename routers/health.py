@@ -25,13 +25,14 @@ async def health_check():
 
     if now - _cli_status_cache["checked_at"] > _CLI_CHECK_INTERVAL:
         try:
-            proc = await asyncio.create_subprocess_exec(
-                settings.CLAUDE_CLI_PATH, "--version",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
-            _cli_status_cache["ok"] = proc.returncode == 0
+            import subprocess
+            def _check_cli():
+                return subprocess.run(
+                    [settings.CLAUDE_CLI_PATH, "--version"],
+                    capture_output=True, timeout=10,
+                )
+            result = await asyncio.to_thread(_check_cli)
+            _cli_status_cache["ok"] = result.returncode == 0
         except Exception:
             _cli_status_cache["ok"] = False
         _cli_status_cache["checked_at"] = now

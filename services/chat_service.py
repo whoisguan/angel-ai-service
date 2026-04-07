@@ -291,11 +291,20 @@ async def chat_stream(
 
     try:
         # H4+H5 fix: all streaming logic + save in single try/finally
+        # Heartbeat: send SSE comment every 15s to keep Cloudflare alive
+        import time
+        last_event_time = time.monotonic()
+
         async for event in claude_cli.stream(
             prompt=full_prompt,
             system_prompt=system_prompt,
             user_store_ids=user_ctx.scope.store_ids,
         ):
+            now_mono = time.monotonic()
+            if now_mono - last_event_time > 15:
+                yield ": keepalive\n\n"
+            last_event_time = now_mono
+
             if event["type"] == "content":
                 chunk = event["text"]
                 full_content += chunk
