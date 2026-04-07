@@ -178,11 +178,6 @@ async def query(
             json_schema_path=json_schema_path,
         )
 
-        import logging
-        _log = logging.getLogger(__name__)
-        _env = _get_env()
-        _log.info(f"CLI cmd[0]: {cmd[0]}, env PATH[0:300]: {_env.get('PATH','')[:300]}")
-
         def _run_cli():
             return subprocess.run(
                 cmd,
@@ -190,7 +185,7 @@ async def query(
                 stderr=subprocess.PIPE,
                 cwd=os.path.dirname(settings.MCP_SERVER_SCRIPT),
                 timeout=settings.CLAUDE_TIMEOUT_SECONDS,
-                shell=False,
+
                 env=_get_env(),
             )
 
@@ -270,7 +265,7 @@ async def stream(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=os.path.dirname(settings.MCP_SERVER_SCRIPT),
-                shell=False,
+
                 env=_get_env(),
             )
             try:

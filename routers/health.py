@@ -47,62 +47,6 @@ async def health_check():
     )
 
 
-@router.get("/debug/subprocess")
-async def debug_subprocess():
-    """Debug endpoint to test subprocess inside uvicorn. TEMPORARY."""
-    import subprocess, os, json
-    from claude_cli import _get_env, _IS_WINDOWS
-    env = _get_env()
-    results = {}
-
-    # Test 1: cmd /c claude --version
-    try:
-        r = subprocess.run(["cmd", "/c", settings.CLAUDE_CLI_PATH, "--version"],
-                          capture_output=True, timeout=10, env=env)
-        results["cmd_c_version"] = {"rc": r.returncode, "out": r.stdout.decode()[:100], "err": r.stderr.decode()[:200]}
-    except Exception as e:
-        results["cmd_c_version"] = {"error": str(e)}
-
-    # Test 2: direct claude --version
-    try:
-        r = subprocess.run([settings.CLAUDE_CLI_PATH, "--version"],
-                          capture_output=True, timeout=10, env=env)
-        results["direct_version"] = {"rc": r.returncode, "out": r.stdout.decode()[:100], "err": r.stderr.decode()[:200]}
-    except Exception as e:
-        results["direct_version"] = {"error": str(e)}
-
-    # Test 3: simple prompt
-    try:
-        r = subprocess.run(["cmd", "/c", settings.CLAUDE_CLI_PATH, "-p", "say ok", "--output-format", "json",
-                           "--no-session-persistence", "--max-budget-usd", "0.1", "--model", "haiku"],
-                          capture_output=True, timeout=30, env=env,
-                          cwd=os.path.dirname(settings.MCP_SERVER_SCRIPT))
-        results["cmd_c_prompt"] = {"rc": r.returncode, "out": r.stdout.decode()[:200], "err": r.stderr.decode()[:200]}
-    except Exception as e:
-        results["cmd_c_prompt"] = {"error": str(e)}
-
-    # Test 4: with MCP config (like real chat)
-    try:
-        import tempfile
-        mcp = {"mcpServers":{"kpi-data":{"command":"python","args":[settings.MCP_SERVER_SCRIPT],"env":{"KPI_DATABASE_URL":settings.KPI_DATABASE_URL,"USER_STORE_IDS":"*"}}}}
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
-            json.dump(mcp, f)
-            mcp_path = f.name
-        r = subprocess.run(["cmd", "/c", settings.CLAUDE_CLI_PATH, "-p", "say ok", "--output-format", "json",
-                           "--no-session-persistence", "--max-budget-usd", "0.1", "--model", "haiku",
-                           "--mcp-config", mcp_path, "--strict-mcp-config", "--permission-mode", "bypassPermissions"],
-                          capture_output=True, timeout=60, env=env,
-                          cwd=os.path.dirname(settings.MCP_SERVER_SCRIPT))
-        results["with_mcp"] = {"rc": r.returncode, "out": r.stdout.decode()[:200], "err": r.stderr.decode()[:200]}
-        os.unlink(mcp_path)
-    except Exception as e:
-        results["with_mcp"] = {"error": str(e)}
-
-    results["env_path_start"] = env.get("PATH", "")[:200]
-    results["is_windows"] = _IS_WINDOWS
-    results["cli_path"] = settings.CLAUDE_CLI_PATH
-
-    return results
 
 
 @router.get("/api/ai/usage", response_model=UsageStats)
