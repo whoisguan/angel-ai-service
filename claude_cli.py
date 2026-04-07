@@ -24,6 +24,22 @@ from config import settings
 # On Windows, .cmd/.bat files need shell=True for subprocess.run/Popen
 _IS_WINDOWS = platform.system() == "Windows"
 
+def _get_env():
+    """Build subprocess env, ensuring node/npm/python are in PATH on Windows."""
+    env = os.environ.copy()
+    if _IS_WINDOWS:
+        extra = [
+            r"C:\Program Files\nodejs",
+            r"C:\Users\SQLTS\AppData\Roaming\npm",
+            r"C:\Users\SQLTS\AppData\Local\Programs\Python\Python311",
+        ]
+        current = env.get("PATH", "")
+        for p in extra:
+            if p not in current:
+                current = p + ";" + current
+        env["PATH"] = current
+    return env
+
 
 class CLIError(Exception):
     """Raised when claude CLI returns an error."""
@@ -165,6 +181,7 @@ async def query(
                 cwd=os.path.dirname(settings.MCP_SERVER_SCRIPT),
                 timeout=settings.CLAUDE_TIMEOUT_SECONDS,
                 shell=_IS_WINDOWS,
+                env=_get_env(),
             )
 
         try:
@@ -244,6 +261,7 @@ async def stream(
                 stderr=subprocess.PIPE,
                 cwd=os.path.dirname(settings.MCP_SERVER_SCRIPT),
                 shell=_IS_WINDOWS,
+                env=_get_env(),
             )
             try:
                 for raw_line in proc.stdout:
