@@ -26,12 +26,12 @@ async def health_check():
     if now - _cli_status_cache["checked_at"] > _CLI_CHECK_INTERVAL:
         try:
             import subprocess
-            import platform
+            from claude_cli import _get_env
             def _check_cli():
                 return subprocess.run(
-                    [settings.CLAUDE_CLI_PATH, "--version"],
+                    ["cmd", "/c", settings.CLAUDE_CLI_PATH, "--version"],
                     capture_output=True, timeout=10,
-                    shell=(platform.system() == "Windows"),
+                    env=_get_env(),
                 )
             result = await asyncio.to_thread(_check_cli)
             _cli_status_cache["ok"] = result.returncode == 0
@@ -45,6 +45,47 @@ async def health_check():
         cli_available=_cli_status_cache["ok"],
         uptime_seconds=int(now - _start_time),
     )
+
+
+@router.get("/debug/subprocess")
+async def debug_subprocess():
+    """Debug endpoint to test subprocess inside uvicorn. TEMPORARY."""
+    import subprocess, os, json
+    from claude_cli import _get_env, _IS_WINDOWS
+    env = _get_env()
+    results = {}
+
+    # Test 1: cmd /c claude --version
+    try:
+        r = subprocess.run(["cmd", "/c", settings.CLAUDE_CLI_PATH, "--version"],
+                          capture_output=True, timeout=10, env=env)
+        results["cmd_c_version"] = {"rc": r.returncode, "out": r.stdout.decode()[:100], "err": r.stderr.decode()[:200]}
+    except Exception as e:
+        results["cmd_c_version"] = {"error": str(e)}
+
+    # Test 2: direct claude --version
+    try:
+        r = subprocess.run([settings.CLAUDE_CLI_PATH, "--version"],
+                          capture_output=True, timeout=10, env=env)
+        results["direct_version"] = {"rc": r.returncode, "out": r.stdout.decode()[:100], "err": r.stderr.decode()[:200]}
+    except Exception as e:
+        results["direct_version"] = {"error": str(e)}
+
+    # Test 3: simple prompt
+    try:
+        r = subprocess.run(["cmd", "/c", settings.CLAUDE_CLI_PATH, "-p", "say ok", "--output-format", "json",
+                           "--no-session-persistence", "--max-budget-usd", "0.1", "--model", "haiku"],
+                          capture_output=True, timeout=30, env=env,
+                          cwd=os.path.dirname(settings.MCP_SERVER_SCRIPT))
+        results["cmd_c_prompt"] = {"rc": r.returncode, "out": r.stdout.decode()[:200], "err": r.stderr.decode()[:200]}
+    except Exception as e:
+        results["cmd_c_prompt"] = {"error": str(e)}
+
+    results["env_path_start"] = env.get("PATH", "")[:200]
+    results["is_windows"] = _IS_WINDOWS
+    results["cli_path"] = settings.CLAUDE_CLI_PATH
+
+    return results
 
 
 @router.get("/api/ai/usage", response_model=UsageStats)
