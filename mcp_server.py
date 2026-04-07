@@ -74,43 +74,42 @@ def tool_get_store_performance(args: dict) -> dict:
 
     try:
         cur = conn.cursor()
-        try:
-            base_query = """
-                SELECT s.store_code, s.name as store_name,
-                       ms.year, ms.month,
-                       ms.total_revenue, ms.baseline_revenue,
-                       ms.surplus_amount, ms.surplus_growth_rate,
-                       ms.final_score, ms.final_bonus_pool,
-                       ms.is_frozen
-                FROM monthly_settlement ms
-                JOIN stores s ON ms.store_id = s.id
-                WHERE ms.year = ?
-            """
-            params = [year]
+        base_query = """
+            SELECT s.store_code, s.name as store_name,
+                   ms.year, ms.month,
+                   ms.total_revenue, ms.baseline_revenue,
+                   ms.surplus_amount, ms.surplus_growth_rate,
+                   ms.final_score, ms.final_bonus_pool,
+                   ms.is_frozen
+            FROM monthly_settlement ms
+            JOIN stores s ON ms.store_id = s.id
+            WHERE ms.year = ?
+        """
+        params = [year]
 
-            if month:
-                base_query += " AND ms.month = ?"
-                params.append(month)
+        if month:
+            base_query += " AND ms.month = ?"
+            params.append(month)
 
-            if store_id:
-                base_query += " AND ms.store_id = ?"
-                params.append(store_id)
-            elif user_stores is not None:  # None=admin(no filter), []=blocked(caught above)
-                placeholders = ",".join(["?"] * len(user_stores))
-                base_query += f" AND ms.store_id IN ({placeholders})"
-                params.extend(user_stores)
+        if store_id:
+            base_query += " AND ms.store_id = ?"
+            params.append(store_id)
+        elif user_stores is not None:  # None=admin(no filter), []=blocked(caught above)
+            placeholders = ",".join(["?"] * len(user_stores))
+            base_query += f" AND ms.store_id IN ({placeholders})"
+            params.extend(user_stores)
 
-            base_query += " ORDER BY ms.month, s.store_code"
-            cur.execute(base_query, params)
-            rows = _fetchall_as_dicts(cur)
+        base_query += " ORDER BY ms.month, s.store_code"
+        cur.execute(base_query, params)
+        rows = _fetchall_as_dicts(cur)
 
-            # Convert Decimal to float for JSON serialization
-            for row in rows:
-                for key, val in row.items():
-                    if hasattr(val, "as_integer_ratio"):  # Decimal/float check
-                        row[key] = float(val)
+        # Convert Decimal to float for JSON serialization
+        for row in rows:
+            for key, val in row.items():
+                if hasattr(val, "as_integer_ratio"):  # Decimal/float check
+                    row[key] = float(val)
 
-            return {"stores": rows, "count": len(rows)}
+        return {"stores": rows, "count": len(rows)}
     finally:
         cur.close()
         conn.close()
@@ -133,38 +132,37 @@ def tool_get_employee_bonus(args: dict) -> dict:
 
     try:
         cur = conn.cursor()
-        try:
-            query = """
-                SELECT e.first_name, e.last_name, s.store_code, s.name as store_name,
-                       d.dept_code, pb.bonus_gross, pb.kpi_score, pb.kpi_factor,
-                       pb.bonus_net
-                FROM personal_bonus pb
-                JOIN employees e ON pb.employee_id = e.id
-                JOIN stores s ON pb.store_id = s.id
-                JOIN departments d ON pb.dept_id = d.id
-                WHERE pb.year = ? AND pb.month = ?
-            """
-            params = [year, month]
+        query = """
+            SELECT e.first_name, e.last_name, s.store_code, s.name as store_name,
+                   d.dept_code, pb.bonus_gross, pb.kpi_score, pb.kpi_factor,
+                   pb.bonus_net
+            FROM personal_bonus pb
+            JOIN employees e ON pb.employee_id = e.id
+            JOIN stores s ON pb.store_id = s.id
+            JOIN departments d ON pb.dept_id = d.id
+            WHERE pb.year = ? AND pb.month = ?
+        """
+        params = [year, month]
 
-            if employee_id:
-                query += " AND pb.employee_id = ?"
-                params.append(employee_id)
+        if employee_id:
+            query += " AND pb.employee_id = ?"
+            params.append(employee_id)
 
-            if user_stores is not None:
-                placeholders = ",".join(["?"] * len(user_stores))
-                query += f" AND pb.store_id IN ({placeholders})"
-                params.extend(user_stores)
+        if user_stores is not None:
+            placeholders = ",".join(["?"] * len(user_stores))
+            query += f" AND pb.store_id IN ({placeholders})"
+            params.extend(user_stores)
 
-            query += " ORDER BY e.last_name, e.first_name"
-            cur.execute(query, params)
-            rows = _fetchall_as_dicts(cur)
+        query += " ORDER BY e.last_name, e.first_name"
+        cur.execute(query, params)
+        rows = _fetchall_as_dicts(cur)
 
-            for row in rows:
-                for key, val in row.items():
-                    if hasattr(val, "as_integer_ratio"):
-                        row[key] = float(val)
+        for row in rows:
+            for key, val in row.items():
+                if hasattr(val, "as_integer_ratio"):
+                    row[key] = float(val)
 
-            return {"bonuses": rows, "count": len(rows)}
+        return {"bonuses": rows, "count": len(rows)}
     finally:
         cur.close()
         conn.close()
@@ -193,28 +191,27 @@ def tool_get_store_ranking(args: dict) -> dict:
 
     try:
         cur = conn.cursor()
-        try:
-            query = """
-                SELECT s.store_code, s.name as store_name,
-                       ms.final_score, ms.surplus_growth_rate, ms.total_revenue,
-                       ms.final_bonus_pool,
-                       RANK() OVER (ORDER BY ms.final_score DESC) as rank_score
-                FROM monthly_settlement ms
-                JOIN stores s ON ms.store_id = s.id
-                WHERE ms.year = ? AND ms.month = ?
-            """
-            params = [year, month]
+        query = """
+            SELECT s.store_code, s.name as store_name,
+                   ms.final_score, ms.surplus_growth_rate, ms.total_revenue,
+                   ms.final_bonus_pool,
+                   RANK() OVER (ORDER BY ms.final_score DESC) as rank_score
+            FROM monthly_settlement ms
+            JOIN stores s ON ms.store_id = s.id
+            WHERE ms.year = ? AND ms.month = ?
+        """
+        params = [year, month]
 
-            if user_stores is not None:
-                placeholders = ",".join(["?"] * len(user_stores))
-                query += f" AND ms.store_id IN ({placeholders})"
-                params.extend(user_stores)
+        if user_stores is not None:
+            placeholders = ",".join(["?"] * len(user_stores))
+            query += f" AND ms.store_id IN ({placeholders})"
+            params.extend(user_stores)
 
-            query += " ORDER BY ms.final_score DESC"
-            cur.execute(query, params)
-            rows = _fetchall_as_dicts(cur)
-            _serialize_rows(rows)
-            return {"rankings": rows, "count": len(rows)}
+        query += " ORDER BY ms.final_score DESC"
+        cur.execute(query, params)
+        rows = _fetchall_as_dicts(cur)
+        _serialize_rows(rows)
+        return {"rankings": rows, "count": len(rows)}
     finally:
         cur.close()
         conn.close()
@@ -239,35 +236,34 @@ def tool_get_employee_score(args: dict) -> dict:
 
     try:
         cur = conn.cursor()
-        try:
-            query = """
-                SELECT e.first_name, e.last_name, s.store_code, s.name as store_name,
-                       sr.total_score, sr.weighted_score,
-                       sr.year, sr.month
-                FROM score_records sr
-                JOIN employees e ON sr.target_employee_id = e.id
-                JOIN stores s ON sr.target_store_id = s.id
-                WHERE sr.year = ? AND sr.month = ?
-            """
-            params = [year, month]
+        query = """
+            SELECT e.first_name, e.last_name, s.store_code, s.name as store_name,
+                   sr.total_score, sr.weighted_score,
+                   sr.year, sr.month
+            FROM score_records sr
+            JOIN employees e ON sr.target_employee_id = e.id
+            JOIN stores s ON sr.target_store_id = s.id
+            WHERE sr.year = ? AND sr.month = ?
+        """
+        params = [year, month]
 
-            if employee_id:
-                query += " AND sr.target_employee_id = ?"
-                params.append(employee_id)
+        if employee_id:
+            query += " AND sr.target_employee_id = ?"
+            params.append(employee_id)
 
-            if store_id:
-                query += " AND sr.target_store_id = ?"
-                params.append(store_id)
-            elif user_stores is not None:
-                placeholders = ",".join(["?"] * len(user_stores))
-                query += f" AND sr.target_store_id IN ({placeholders})"
-                params.extend(user_stores)
+        if store_id:
+            query += " AND sr.target_store_id = ?"
+            params.append(store_id)
+        elif user_stores is not None:
+            placeholders = ",".join(["?"] * len(user_stores))
+            query += f" AND sr.target_store_id IN ({placeholders})"
+            params.extend(user_stores)
 
-            query += " ORDER BY sr.total_score DESC, e.last_name, e.first_name"
-            cur.execute(query, params)
-            rows = _fetchall_as_dicts(cur)
-            _serialize_rows(rows)
-            return {"scores": rows, "count": len(rows)}
+        query += " ORDER BY sr.total_score DESC, e.last_name, e.first_name"
+        cur.execute(query, params)
+        rows = _fetchall_as_dicts(cur)
+        _serialize_rows(rows)
+        return {"scores": rows, "count": len(rows)}
     finally:
         cur.close()
         conn.close()
@@ -291,63 +287,62 @@ def tool_get_score_trend(args: dict) -> dict:
 
     try:
         cur = conn.cursor()
-        try:
-            if entity_type == "STORE":
-                # Permission check for store
-                if user_stores is not None and entity_id not in user_stores:
-                    return {"error": "You don't have permission to view this store."}
+        if entity_type == "STORE":
+            # Permission check for store
+            if user_stores is not None and entity_id not in user_stores:
+                return {"error": "You don't have permission to view this store."}
 
-                query = """
-                    SELECT ms.month, ms.final_score as score,
-                           s.store_code, s.name as store_name
-                    FROM monthly_settlement ms
-                    JOIN stores s ON ms.store_id = s.id
-                    WHERE ms.store_id = ? AND ms.year = ?
-                      AND ms.month >= ? AND ms.month <= ?
-                    ORDER BY ms.month
-                """
-                params = [entity_id, year, month_from, month_to]
+            query = """
+                SELECT ms.month, ms.final_score as score,
+                       s.store_code, s.name as store_name
+                FROM monthly_settlement ms
+                JOIN stores s ON ms.store_id = s.id
+                WHERE ms.store_id = ? AND ms.year = ?
+                  AND ms.month >= ? AND ms.month <= ?
+                ORDER BY ms.month
+            """
+            params = [entity_id, year, month_from, month_to]
 
-            elif entity_type == "EMPLOYEE":
-                query = """
-                    SELECT sr.month, sr.total_score as score,
-                           e.first_name, e.last_name,
-                           s.store_code, s.name as store_name
-                    FROM score_records sr
-                    JOIN employees e ON sr.target_employee_id = e.id
-                    JOIN stores s ON sr.target_store_id = s.id
-                    WHERE sr.target_employee_id = ? AND sr.year = ?
-                      AND sr.month >= ? AND sr.month <= ?
-                """
-                params = [entity_id, year, month_from, month_to]
+        elif entity_type == "EMPLOYEE":
+            query = """
+                SELECT sr.month, sr.total_score as score,
+                       e.first_name, e.last_name,
+                       s.store_code, s.name as store_name
+                FROM score_records sr
+                JOIN employees e ON sr.target_employee_id = e.id
+                JOIN stores s ON sr.target_store_id = s.id
+                WHERE sr.target_employee_id = ? AND sr.year = ?
+                  AND sr.month >= ? AND sr.month <= ?
+            """
+            params = [entity_id, year, month_from, month_to]
 
-                # Permission check: filter by accessible stores
-                if user_stores is not None:
-                    placeholders = ",".join(["?"] * len(user_stores))
-                    query += f" AND sr.target_store_id IN ({placeholders})"
-                    params.extend(user_stores)
+            # Permission check: filter by accessible stores
+            if user_stores is not None:
+                placeholders = ",".join(["?"] * len(user_stores))
+                query += f" AND sr.target_store_id IN ({placeholders})"
+                params.extend(user_stores)
 
-                query += " ORDER BY sr.month"
+            query += " ORDER BY sr.month"
 
-            else:
-                return {"error": f"Invalid entity_type: {entity_type}. Use STORE or EMPLOYEE."}
+        else:
+            return {"error": f"Invalid entity_type: {entity_type}. Use STORE or EMPLOYEE."}
 
-            cur.execute(query, params)
-            rows = _fetchall_as_dicts(cur)
-            _serialize_rows(rows)
+        cur.execute(query, params)
+        rows = _fetchall_as_dicts(cur)
+        _serialize_rows(rows)
 
-            # Compute trend summary
-            scores = [r["score"] for r in rows if r["score"] is not None]
-            summary = {}
-            if scores:
-                summary = {
-                    "avg": round(sum(scores) / len(scores), 2),
-                    "best": max(scores),
-                    "worst": min(scores),
-                    "months_count": len(scores),
-                }
+        # Compute trend summary
+        scores = [r["score"] for r in rows if r["score"] is not None]
+        summary = {}
+        if scores:
+            summary = {
+                "avg": round(sum(scores) / len(scores), 2),
+                "best": max(scores),
+                "worst": min(scores),
+                "months_count": len(scores),
+            }
 
-            return {"trend": rows, "summary": summary}
+        return {"trend": rows, "summary": summary}
     finally:
         cur.close()
         conn.close()
@@ -371,47 +366,46 @@ def tool_get_scoring_completion(args: dict) -> dict:
 
     try:
         cur = conn.cursor()
-        try:
-            query = """
-                SELECT s.store_code, s.name as store_name,
-                       COUNT(*) as total_tasks,
-                       SUM(CASE WHEN st.status = 'completed' THEN 1 ELSE 0 END) as completed,
-                       SUM(CASE WHEN st.status != 'completed' THEN 1 ELSE 0 END) as pending,
-                       ROUND(SUM(CASE WHEN st.status = 'completed' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) as completion_rate
-                FROM score_tasks st
-                JOIN stores s ON st.target_store_id = s.id
-                WHERE st.year = ? AND st.month = ?
-            """
-            params = [year, month]
+        query = """
+            SELECT s.store_code, s.name as store_name,
+                   COUNT(*) as total_tasks,
+                   SUM(CASE WHEN st.status = 'completed' THEN 1 ELSE 0 END) as completed,
+                   SUM(CASE WHEN st.status != 'completed' THEN 1 ELSE 0 END) as pending,
+                   ROUND(SUM(CASE WHEN st.status = 'completed' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) as completion_rate
+            FROM score_tasks st
+            JOIN stores s ON st.target_store_id = s.id
+            WHERE st.year = ? AND st.month = ?
+        """
+        params = [year, month]
 
-            if store_id:
-                query += " AND st.target_store_id = ?"
-                params.append(store_id)
-            elif user_stores is not None:
-                placeholders = ",".join(["?"] * len(user_stores))
-                query += f" AND st.target_store_id IN ({placeholders})"
-                params.extend(user_stores)
+        if store_id:
+            query += " AND st.target_store_id = ?"
+            params.append(store_id)
+        elif user_stores is not None:
+            placeholders = ",".join(["?"] * len(user_stores))
+            query += f" AND st.target_store_id IN ({placeholders})"
+            params.extend(user_stores)
 
-            query += " GROUP BY s.store_code, s.name ORDER BY s.store_code"
-            cur.execute(query, params)
-            rows = _fetchall_as_dicts(cur)
-            _serialize_rows(rows)
+        query += " GROUP BY s.store_code, s.name ORDER BY s.store_code"
+        cur.execute(query, params)
+        rows = _fetchall_as_dicts(cur)
+        _serialize_rows(rows)
 
-            # Compute overall summary
-            total = sum(r["total_tasks"] for r in rows)
-            completed = sum(r["completed"] for r in rows)
-            pending = sum(r["pending"] for r in rows)
-            overall_rate = round(completed * 100.0 / total, 1) if total > 0 else 0.0
+        # Compute overall summary
+        total = sum(r["total_tasks"] for r in rows)
+        completed = sum(r["completed"] for r in rows)
+        pending = sum(r["pending"] for r in rows)
+        overall_rate = round(completed * 100.0 / total, 1) if total > 0 else 0.0
 
-            return {
-                "by_store": rows,
-                "overall": {
-                    "total_tasks": total,
-                    "completed": completed,
-                    "pending": pending,
-                    "completion_rate": overall_rate,
-                },
-            }
+        return {
+            "by_store": rows,
+            "overall": {
+                "total_tasks": total,
+                "completed": completed,
+                "pending": pending,
+                "completion_rate": overall_rate,
+            },
+        }
     finally:
         cur.close()
         conn.close()
@@ -435,20 +429,19 @@ def tool_get_department_bonus(args: dict) -> dict:
 
     try:
         cur = conn.cursor()
-        try:
-            query = """
-                SELECT d.dept_code, d.dept_name_it as dept_name,
-                       db.bonus_amount
-                FROM dept_bonus db
-                JOIN departments d ON db.dept_id = d.id
-                WHERE db.store_id = ? AND db.year = ? AND db.month = ?
-                ORDER BY db.bonus_amount DESC
-            """
-            params = [store_id, year, month]
-            cur.execute(query, params)
-            rows = _fetchall_as_dicts(cur)
-            _serialize_rows(rows)
-            return {"departments": rows, "count": len(rows), "store_id": store_id}
+        query = """
+            SELECT d.dept_code, d.dept_name_it as dept_name,
+                   db.bonus_amount
+            FROM dept_bonus db
+            JOIN departments d ON db.dept_id = d.id
+            WHERE db.store_id = ? AND db.year = ? AND db.month = ?
+            ORDER BY db.bonus_amount DESC
+        """
+        params = [store_id, year, month]
+        cur.execute(query, params)
+        rows = _fetchall_as_dicts(cur)
+        _serialize_rows(rows)
+        return {"departments": rows, "count": len(rows), "store_id": store_id}
     finally:
         cur.close()
         conn.close()
@@ -464,22 +457,21 @@ def tool_get_config_params(args: dict) -> dict:
 
     try:
         cur = conn.cursor()
-        try:
-            query = """
-                SELECT param_category, param_name, param_value, description
-                FROM config_params
-            """
-            params = []
+        query = """
+            SELECT param_category, param_name, param_value, description
+            FROM config_params
+        """
+        params = []
 
-            if param_category:
-                query += " WHERE param_category = ?"
-                params.append(param_category)
+        if param_category:
+            query += " WHERE param_category = ?"
+            params.append(param_category)
 
-            query += " ORDER BY param_category, param_name"
-            cur.execute(query, params)
-            rows = _fetchall_as_dicts(cur)
-            _serialize_rows(rows)
-            return {"params": rows, "count": len(rows)}
+        query += " ORDER BY param_category, param_name"
+        cur.execute(query, params)
+        rows = _fetchall_as_dicts(cur)
+        _serialize_rows(rows)
+        return {"params": rows, "count": len(rows)}
     finally:
         cur.close()
         conn.close()
@@ -605,89 +597,88 @@ def tool_detect_anomalies(args: dict) -> dict:
     try:
         anomalies = []
         cur = conn.cursor()
-        try:
-            # Build store filter clause
-            store_filter = ""
-            store_params = []
-            if user_stores is not None:
-                placeholders = ",".join(["?"] * len(user_stores))
-                store_filter = f" AND ms.store_id IN ({placeholders})"
-                store_params = list(user_stores)
+        # Build store filter clause
+        store_filter = ""
+        store_params = []
+        if user_stores is not None:
+            placeholders = ",".join(["?"] * len(user_stores))
+            store_filter = f" AND ms.store_id IN ({placeholders})"
+            store_params = list(user_stores)
 
-            # 1. Detect score_swing: compare with previous month
-            query_swing = f"""
-                SELECT s.store_code, s.name as store_name,
-                       ms.final_score as current_score,
-                       prev.final_score as prev_score,
-                       (ms.final_score - prev.final_score) as score_diff
-                FROM monthly_settlement ms
-                JOIN monthly_settlement prev
-                  ON ms.store_id = prev.store_id
-                  AND prev.year = CASE WHEN ? = 1 THEN ? - 1 ELSE ? END
-                  AND prev.month = CASE WHEN ? = 1 THEN 12 ELSE ? - 1 END
-                JOIN stores s ON ms.store_id = s.id
-                WHERE ms.year = ? AND ms.month = ?
-                  AND ABS(ms.final_score - prev.final_score) > 20
-                  {store_filter}
-            """
-            params_swing = [month, year, year, month, month, year, month] + store_params
-            cur.execute(query_swing, params_swing)
-            for row in _fetchall_as_dicts(cur):
-                _serialize_rows([row])
-                anomalies.append({
-                    "type": "score_swing",
-                    "severity": "high" if abs(row["score_diff"]) > 30 else "medium",
-                    "store_code": row["store_code"],
-                    "detail": (
-                        f"{row['store_name']}: score changed by {row['score_diff']:+.1f} "
-                        f"({row['prev_score']:.1f} -> {row['current_score']:.1f})"
-                    ),
-                })
+        # 1. Detect score_swing: compare with previous month
+        query_swing = f"""
+            SELECT s.store_code, s.name as store_name,
+                   ms.final_score as current_score,
+                   prev.final_score as prev_score,
+                   (ms.final_score - prev.final_score) as score_diff
+            FROM monthly_settlement ms
+            JOIN monthly_settlement prev
+              ON ms.store_id = prev.store_id
+              AND prev.year = CASE WHEN ? = 1 THEN ? - 1 ELSE ? END
+              AND prev.month = CASE WHEN ? = 1 THEN 12 ELSE ? - 1 END
+            JOIN stores s ON ms.store_id = s.id
+            WHERE ms.year = ? AND ms.month = ?
+              AND ABS(ms.final_score - prev.final_score) > 20
+              {store_filter}
+        """
+        params_swing = [month, year, year, month, month, year, month] + store_params
+        cur.execute(query_swing, params_swing)
+        for row in _fetchall_as_dicts(cur):
+            _serialize_rows([row])
+            anomalies.append({
+                "type": "score_swing",
+                "severity": "high" if abs(row["score_diff"]) > 30 else "medium",
+                "store_code": row["store_code"],
+                "detail": (
+                    f"{row['store_name']}: score changed by {row['score_diff']:+.1f} "
+                    f"({row['prev_score']:.1f} -> {row['current_score']:.1f})"
+                ),
+            })
 
-            # 2. Detect zero_surplus: stores with zero or negative surplus
-            query_zero = f"""
-                SELECT s.store_code, s.name as store_name,
-                       ms.surplus_amount, ms.total_revenue, ms.baseline_revenue
-                FROM monthly_settlement ms
-                JOIN stores s ON ms.store_id = s.id
-                WHERE ms.year = ? AND ms.month = ?
-                  AND ms.surplus_amount <= 0
-                  {store_filter}
-            """
-            params_zero = [year, month] + store_params
-            cur.execute(query_zero, params_zero)
-            for row in _fetchall_as_dicts(cur):
-                _serialize_rows([row])
-                anomalies.append({
-                    "type": "zero_surplus",
-                    "severity": "medium",
-                    "store_code": row["store_code"],
-                    "detail": (
-                        f"{row['store_name']}: surplus={row['surplus_amount']:.2f} "
-                        f"(revenue={row['total_revenue']:.2f}, baseline={row['baseline_revenue']:.2f})"
-                    ),
-                })
+        # 2. Detect zero_surplus: stores with zero or negative surplus
+        query_zero = f"""
+            SELECT s.store_code, s.name as store_name,
+                   ms.surplus_amount, ms.total_revenue, ms.baseline_revenue
+            FROM monthly_settlement ms
+            JOIN stores s ON ms.store_id = s.id
+            WHERE ms.year = ? AND ms.month = ?
+              AND ms.surplus_amount <= 0
+              {store_filter}
+        """
+        params_zero = [year, month] + store_params
+        cur.execute(query_zero, params_zero)
+        for row in _fetchall_as_dicts(cur):
+            _serialize_rows([row])
+            anomalies.append({
+                "type": "zero_surplus",
+                "severity": "medium",
+                "store_code": row["store_code"],
+                "detail": (
+                    f"{row['store_name']}: surplus={row['surplus_amount']:.2f} "
+                    f"(revenue={row['total_revenue']:.2f}, baseline={row['baseline_revenue']:.2f})"
+                ),
+            })
 
-            # 3. Detect low_score: stores with final_score below 50
-            query_low = f"""
-                SELECT s.store_code, s.name as store_name,
-                       ms.final_score
-                FROM monthly_settlement ms
-                JOIN stores s ON ms.store_id = s.id
-                WHERE ms.year = ? AND ms.month = ?
-                  AND ms.final_score < 50
-                  {store_filter}
-            """
-            params_low = [year, month] + store_params
-            cur.execute(query_low, params_low)
-            for row in _fetchall_as_dicts(cur):
-                _serialize_rows([row])
-                anomalies.append({
-                    "type": "low_score",
-                    "severity": "high" if row["final_score"] < 30 else "medium",
-                    "store_code": row["store_code"],
-                    "detail": f"{row['store_name']}: final_score={row['final_score']:.1f} (below 50)",
-                })
+        # 3. Detect low_score: stores with final_score below 50
+        query_low = f"""
+            SELECT s.store_code, s.name as store_name,
+                   ms.final_score
+            FROM monthly_settlement ms
+            JOIN stores s ON ms.store_id = s.id
+            WHERE ms.year = ? AND ms.month = ?
+              AND ms.final_score < 50
+              {store_filter}
+        """
+        params_low = [year, month] + store_params
+        cur.execute(query_low, params_low)
+        for row in _fetchall_as_dicts(cur):
+            _serialize_rows([row])
+            anomalies.append({
+                "type": "low_score",
+                "severity": "high" if row["final_score"] < 30 else "medium",
+                "store_code": row["store_code"],
+                "detail": f"{row['store_name']}: final_score={row['final_score']:.1f} (below 50)",
+            })
 
         return {"anomalies": anomalies, "count": len(anomalies), "year": year, "month": month}
     finally:
