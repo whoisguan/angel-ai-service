@@ -28,16 +28,8 @@ def _get_env():
     """Build subprocess env, ensuring node/npm/python are in PATH on Windows."""
     env = os.environ.copy()
     if _IS_WINDOWS:
-        extra = [
-            r"C:\Program Files\nodejs",
-            r"C:\Users\SQLTS\AppData\Roaming\npm",
-            r"C:\Users\SQLTS\AppData\Local\Programs\Python\Python311",
-        ]
-        current = env.get("PATH", "")
-        for p in extra:
-            if p not in current:
-                current = p + ";" + current
-        env["PATH"] = current
+        extra = r"C:\Program Files\nodejs;C:\Users\SQLTS\AppData\Roaming\npm;C:\Users\SQLTS\AppData\Local\Programs\Python\Python311"
+        env["PATH"] = extra + ";" + env.get("PATH", "")
     return env
 
 
