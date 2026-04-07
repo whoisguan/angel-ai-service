@@ -11,6 +11,7 @@ Windows uvicorn's SelectorEventLoop.
 import asyncio
 import json
 import os
+import platform
 import queue
 import subprocess
 import tempfile
@@ -19,6 +20,9 @@ import uuid
 from typing import AsyncIterator, Optional
 
 from config import settings
+
+# On Windows, .cmd/.bat files need shell=True for subprocess.run/Popen
+_IS_WINDOWS = platform.system() == "Windows"
 
 
 class CLIError(Exception):
@@ -156,6 +160,7 @@ async def query(
                 stderr=subprocess.PIPE,
                 cwd=os.path.dirname(settings.MCP_SERVER_SCRIPT),
                 timeout=settings.CLAUDE_TIMEOUT_SECONDS,
+                shell=_IS_WINDOWS,
             )
 
         try:
@@ -234,6 +239,7 @@ async def stream(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=os.path.dirname(settings.MCP_SERVER_SCRIPT),
+                shell=_IS_WINDOWS,
             )
             try:
                 for raw_line in proc.stdout:
