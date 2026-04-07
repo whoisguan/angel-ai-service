@@ -81,6 +81,23 @@ async def debug_subprocess():
     except Exception as e:
         results["cmd_c_prompt"] = {"error": str(e)}
 
+    # Test 4: with MCP config (like real chat)
+    try:
+        import tempfile
+        mcp = {"mcpServers":{"kpi-data":{"command":"python","args":[settings.MCP_SERVER_SCRIPT],"env":{"KPI_DATABASE_URL":settings.KPI_DATABASE_URL,"USER_STORE_IDS":"*"}}}}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
+            json.dump(mcp, f)
+            mcp_path = f.name
+        r = subprocess.run(["cmd", "/c", settings.CLAUDE_CLI_PATH, "-p", "say ok", "--output-format", "json",
+                           "--no-session-persistence", "--max-budget-usd", "0.1", "--model", "haiku",
+                           "--mcp-config", mcp_path, "--strict-mcp-config", "--permission-mode", "bypassPermissions"],
+                          capture_output=True, timeout=60, env=env,
+                          cwd=os.path.dirname(settings.MCP_SERVER_SCRIPT))
+        results["with_mcp"] = {"rc": r.returncode, "out": r.stdout.decode()[:200], "err": r.stderr.decode()[:200]}
+        os.unlink(mcp_path)
+    except Exception as e:
+        results["with_mcp"] = {"error": str(e)}
+
     results["env_path_start"] = env.get("PATH", "")[:200]
     results["is_windows"] = _IS_WINDOWS
     results["cli_path"] = settings.CLAUDE_CLI_PATH
