@@ -31,8 +31,8 @@ class Settings(BaseSettings):
     MCP_SERVER_SCRIPT: str = str(_PROJECT_ROOT / "mcp_server.py")
     MCP_PYTHON_PATH: str = "python"
 
-    # KPI Database (read-only, for MCP Server)
-    KPI_DATABASE_URL: str = "mysql+pymysql://readonly:password@localhost/angel_kpi"
+    # KPI Database (read-only, for MCP Server — ODBC connection string)
+    KPI_DATABASE_URL: str = "DRIVER={ODBC Driver 17 for SQL Server};SERVER=localhost\\SQLSERVER;DATABASE=angel_kpi;UID=sa;PWD=sa;TrustServerCertificate=yes;"
     BI_SQLSERVER_URL: str = ""  # optional: mssql+pyodbc://...
 
     # Rate limiting
