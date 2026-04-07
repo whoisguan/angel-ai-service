@@ -171,7 +171,8 @@ async def query(
 
         import logging
         _log = logging.getLogger(__name__)
-        _log.info(f"CLI cmd[0:3]: {cmd[:3]}, cwd: {os.path.dirname(settings.MCP_SERVER_SCRIPT)}, PATH snippet: {os.environ.get('PATH','')[:200]}")
+        _env = _get_env()
+        _log.info(f"CLI cmd[0]: {cmd[0]}, env PATH[0:300]: {_env.get('PATH','')[:300]}")
 
         def _run_cli():
             return subprocess.run(
