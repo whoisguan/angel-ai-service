@@ -66,6 +66,14 @@ def _load_system_prompt(user_ctx: UserContext, page_context: dict = None) -> tup
         for key, value in page_context.items():
             page_info += f"- {key}: {value}\n"
 
+    # Language instruction based on page_context.lang or user locale
+    ui_lang = (page_context or {}).get("lang") or user_ctx.locale or "it"
+    lang_instruction = ""
+    if ui_lang == "zh":
+        lang_instruction = "\n\n**IMPORTANT: The user's interface is in Chinese. Always respond in Chinese (中文).**\n"
+    else:
+        lang_instruction = "\n\n**IMPORTANT: The user's interface is in Italian. Always respond in Italian (Italiano).**\n"
+
     # Inject user profile summary (if enough history)
     profile_info = ""
     profile_summary = get_profile_summary(user_ctx.user_id, user_ctx.source_system)
@@ -75,7 +83,7 @@ def _load_system_prompt(user_ctx: UserContext, page_context: dict = None) -> tup
     # Inject cross-conversation memories
     memory_info = build_memory_context(user_ctx.user_id, user_ctx.source_system) or ""
 
-    return base_prompt + user_info + page_info + profile_info + memory_info, version_tag
+    return base_prompt + user_info + page_info + lang_instruction + profile_info + memory_info, version_tag
 
 
 def _enrich_prompt_with_knowledge(prompt: str, user_message: str, user_ctx: UserContext = None) -> tuple[str, str, list[int]]:
