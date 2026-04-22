@@ -6,7 +6,7 @@ import os
 from datetime import datetime, timezone
 from typing import AsyncIterator, Optional
 
-import claude_cli
+import llm
 from config import settings
 from db.sqlite_db import get_db
 from models.schemas import ChatRequest, ChatMessage, ChatResponse, UserContext
@@ -191,9 +191,9 @@ async def chat(
     user_ctx: UserContext,
 ) -> ChatResponse:
     """Process a non-streaming chat request. Returns ChatResponse with real conversation_id."""
-    conversation_id = request.conversation_id or claude_cli.generate_conversation_id()
-    user_msg_id = claude_cli.generate_message_id()
-    ai_msg_id = claude_cli.generate_message_id()
+    conversation_id = request.conversation_id or llm.generate_conversation_id()
+    user_msg_id = llm.generate_message_id()
+    ai_msg_id = llm.generate_message_id()
 
     # Input validation — block if injection detected (C1 fix)
     injection = check_input(request.message, user_id=user_ctx.user_id, source_system=user_ctx.source_system)
@@ -217,7 +217,7 @@ async def chat(
     # Call Claude CLI with concurrency control
     await acquire_cli_slot()
     try:
-        result = await claude_cli.query(
+        result = await llm.query(
             prompt=full_prompt,
             system_prompt=system_prompt,
             user_store_ids=user_ctx.scope.store_ids,
@@ -226,7 +226,7 @@ async def chat(
         await release_cli_slot()
 
     # Sanitize output
-    clean_content = sanitize_output(result.result)
+    clean_content = sanitize_output(result.text)
 
     # Save assistant message
     _save_message(
@@ -266,9 +266,9 @@ async def chat_stream(
     BEFORE the generator starts, so HTTP 400/429 can be returned properly.
     The slot is released in the finally block below.
     """
-    conversation_id = request.conversation_id or claude_cli.generate_conversation_id()
-    user_msg_id = claude_cli.generate_message_id()
-    ai_msg_id = claude_cli.generate_message_id()
+    conversation_id = request.conversation_id or llm.generate_conversation_id()
+    user_msg_id = llm.generate_message_id()
+    ai_msg_id = llm.generate_message_id()
 
     if not slot_already_acquired:
         # Fallback: if called without pre-flight from router
@@ -295,23 +295,25 @@ async def chat_stream(
     full_content = ""
     cost_usd = 0
     duration_ms = 0
-    model = settings.CLAUDE_MODEL  # M9 fix: default model for streaming
+    model = settings.GEMINI_MODEL if settings.LLM_BACKEND.strip().lower() == "gemini" else settings.CLAUDE_MODEL
 
     try:
-        # H4+H5 fix: all streaming logic + save in single try/finally
-        # Heartbeat: send SSE comment every 15s to keep Cloudflare alive
-        import time
-        last_event_time = time.monotonic()
-
-        async for event in claude_cli.stream(
+        # Provider-agnostic keepalive: emit SSE comment every 15s even if the
+        # backend hasn't produced tokens yet (Cloudflare idle timeout).
+        stream_it = llm.stream(
             prompt=full_prompt,
             system_prompt=system_prompt,
             user_store_ids=user_ctx.scope.store_ids,
-        ):
-            now_mono = time.monotonic()
-            if now_mono - last_event_time > 15:
+        ).__aiter__()
+
+        while True:
+            try:
+                event = await asyncio.wait_for(stream_it.__anext__(), timeout=15)
+            except asyncio.TimeoutError:
                 yield ": keepalive\n\n"
-            last_event_time = now_mono
+                continue
+            except StopAsyncIteration:
+                break
 
             if event["type"] == "content":
                 chunk = event["text"]

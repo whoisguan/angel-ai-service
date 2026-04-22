@@ -11,9 +11,34 @@ Usage:
 import json
 import os
 import sys
+from contextvars import ContextVar
 
 # MCP protocol over stdio — minimal implementation
 # Uses the MCP SDK if available, falls back to raw JSON-RPC
+
+_NO_OVERRIDE = object()
+_CTX_USER_STORE_IDS: ContextVar[list[int] | None | object] = ContextVar("CTX_USER_STORE_IDS", default=_NO_OVERRIDE)
+_CTX_KPI_DATABASE_URL: ContextVar[str | object] = ContextVar("CTX_KPI_DATABASE_URL", default=_NO_OVERRIDE)
+
+
+def set_runtime_context(user_store_ids: list[int] | None, kpi_database_url: str) -> tuple[object, object]:
+    """Set per-request context (thread-safe via contextvars).
+
+    This allows the in-process LLM backend (e.g. Gemini) to call the same tool
+    implementations without relying on global environment variables.
+
+    Returns context tokens that must be passed to reset_runtime_context().
+    """
+    t1 = _CTX_USER_STORE_IDS.set(user_store_ids)
+    t2 = _CTX_KPI_DATABASE_URL.set(kpi_database_url)
+    return t1, t2
+
+
+def reset_runtime_context(tokens: tuple[object, object]) -> None:
+    """Reset per-request context tokens returned by set_runtime_context()."""
+    t1, t2 = tokens
+    _CTX_USER_STORE_IDS.reset(t1)
+    _CTX_KPI_DATABASE_URL.reset(t2)
 
 
 def get_user_store_ids() -> list[int] | None:
@@ -24,6 +49,10 @@ def get_user_store_ids() -> list[int] | None:
         []: no permission (USER_STORE_IDS empty or not set)
         [1,2,3]: specific store access
     """
+    override = _CTX_USER_STORE_IDS.get()
+    if override is not _NO_OVERRIDE:
+        return override  # None = admin, [] = blocked, [ids] = scoped
+
     raw = os.environ.get("USER_STORE_IDS", "")
     if not raw:
         return []  # empty = NO permission (safe default)
@@ -40,7 +69,8 @@ def get_user_store_ids() -> list[int] | None:
 def get_db_connection():
     """Get database connection via pyodbc (SQL Server)."""
     import pyodbc
-    conn_str = os.environ.get("KPI_DATABASE_URL", "")
+    override = _CTX_KPI_DATABASE_URL.get()
+    conn_str = override if override is not _NO_OVERRIDE else os.environ.get("KPI_DATABASE_URL", "")
     if not conn_str:
         return None
     conn = pyodbc.connect(conn_str)

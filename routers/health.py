@@ -4,6 +4,7 @@ import asyncio
 import time
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
 from config import settings
@@ -20,21 +21,33 @@ _CLI_CHECK_INTERVAL = 60  # seconds
 
 @router.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Health check — no authentication required. CLI check cached for 60s."""
+    """Health check — no authentication required. Backend check cached for 60s."""
     now = time.time()
 
     if now - _cli_status_cache["checked_at"] > _CLI_CHECK_INTERVAL:
         try:
-            import subprocess
-            from claude_cli import _get_env
-            def _check_cli():
-                return subprocess.run(
-                    ["cmd", "/c", settings.CLAUDE_CLI_PATH, "--version"],
-                    capture_output=True, timeout=10,
-                    env=_get_env(),
-                )
-            result = await asyncio.to_thread(_check_cli)
-            _cli_status_cache["ok"] = result.returncode == 0
+            backend = (settings.LLM_BACKEND or "gemini").strip().lower()
+            if backend == "gemini":
+                if not settings.GEMINI_API_KEY:
+                    _cli_status_cache["ok"] = False
+                else:
+                    async with httpx.AsyncClient(timeout=8.0) as client:
+                        url = settings.GEMINI_BASE_URL.rstrip("/") + "/models"
+                        r = await client.get(url, headers={"x-goog-api-key": settings.GEMINI_API_KEY})
+                        _cli_status_cache["ok"] = r.status_code == 200
+            else:
+                import subprocess
+                from claude_cli import _get_env
+
+                def _check_cli():
+                    return subprocess.run(
+                        ["cmd", "/c", settings.CLAUDE_CLI_PATH, "--version"],
+                        capture_output=True, timeout=10,
+                        env=_get_env(),
+                    )
+
+                result = await asyncio.to_thread(_check_cli)
+                _cli_status_cache["ok"] = result.returncode == 0
         except Exception:
             _cli_status_cache["ok"] = False
         _cli_status_cache["checked_at"] = now

@@ -20,12 +20,27 @@ class Settings(BaseSettings):
     # Authentication — service token for system-to-system calls
     SERVICE_TOKEN_SECRET: str = "change-me-in-production"
 
+    # LLM backend
+    # - "gemini": Google Gemini API
+    # - "claude_cli": legacy Claude Code CLI backend
+    # Default keeps production behavior until Gemini credentials are configured.
+    LLM_BACKEND: str = "claude_cli"
+
     # Claude CLI settings
     CLAUDE_CLI_PATH: str = "claude"  # assumes claude is in PATH
     CLAUDE_MODEL: str = "sonnet"  # default model; can be "opus", "haiku", "sonnet"
     CLAUDE_MAX_BUDGET_USD: float = 0.50  # per-request safety cap
     CLAUDE_PERMISSION_MODE: str = "bypassPermissions"  # for automation
     CLAUDE_TIMEOUT_SECONDS: int = 120
+
+    # Gemini API (Developer API via API key)
+    GEMINI_API_KEY: str = ""  # set in .env; required when LLM_BACKEND="gemini"
+    GEMINI_MODEL: str = "gemini-3-flash-preview"
+    GEMINI_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta"
+    GEMINI_TIMEOUT_SECONDS: int = 120
+    GEMINI_TEMPERATURE: float = 1.0
+    GEMINI_MAX_OUTPUT_TOKENS: int = 4096
+    GEMINI_FUNCTION_CALLING_MODE: str = "AUTO"  # AUTO | ANY | NONE
 
     # MCP Server
     MCP_SERVER_SCRIPT: str = str(_PROJECT_ROOT / "mcp_server.py")

@@ -5,3 +5,6 @@ __pycache__/
 *.pyc
 .venv/
 .pytest_cache/
+_*.py
+*.bak-*
+logs/

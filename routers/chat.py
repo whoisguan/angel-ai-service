@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Path
 from fastapi.responses import StreamingResponse
 
-from claude_cli import CLIError
+from llm import LLMError
 from db.sqlite_db import get_db
 from models.schemas import ChatRequest, ChatResponse, FeedbackRequest, UserContext
 from security.auth import get_authenticated_context, verify_service_token
@@ -57,8 +57,8 @@ async def chat_endpoint(
 
     except HTTPException:
         raise  # Let 400/429 pass through unchanged
-    except CLIError as e:
-        logger.error(f"CLI error: {e} | stderr: {e.stderr}")
+    except LLMError as e:
+        logger.error(f"LLM error: {e} | detail: {getattr(e, 'detail', '')}")
         raise HTTPException(
             status_code=503,
             detail="AI service temporarily unavailable. Please try again.",
