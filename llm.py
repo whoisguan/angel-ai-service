@@ -24,6 +24,9 @@ from dataclasses import dataclass
 from typing import Any, AsyncIterator, Optional
 
 import httpx
+import logging
+
+_dbg = logging.getLogger("gemini_dbg")
 
 import claude_cli
 from config import settings
@@ -182,6 +185,7 @@ async def _gemini_resolve_tools(
 
         model_content = _ensure_role(candidates[0].get("content") or {})
         calls = _extract_function_calls(model_content)
+        _dbg.info("GEMINI_RAW model_content=%s calls=%s", str(model_content)[:800], calls)
         if not calls:
             # No tool calls; keep model content in the transcript for final generation.
             contents.append(model_content)
@@ -251,6 +255,16 @@ async def query(
 
     # Gemini
     contents, _tool_events = await _gemini_resolve_tools(prompt, system_prompt, user_store_ids)
+
+    # Short-circuit: when the tool-calling loop already produced text in its
+    # final turn, return it directly. Re-prompting Gemini with a transcript
+    # that ends in its own answer tends to yield an empty response.
+    if contents and contents[-1].get("role") == "model":
+        _direct = _extract_text_parts(contents[-1])
+        _dbg.info("SHORT_CIRCUIT last_content=%s direct_len=%s", str(contents[-1])[:400], len(_direct))
+        if _direct:
+            _dur = int((time.perf_counter() - start) * 1000)
+            return LLMResult(text=_direct, cost_usd=0.0, duration_ms=_dur, model=settings.GEMINI_MODEL)
 
     payload: dict[str, Any] = {
         "contents": contents,

@@ -19,7 +19,7 @@ from routers import chat, health
 logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
+    handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(str(__import__("pathlib").Path(__file__).parent / "logs" / "service.log"), encoding="utf-8")],
 )
 logger = logging.getLogger(__name__)
 
