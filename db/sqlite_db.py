@@ -222,6 +222,38 @@ def init_db():
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_um_user_key_active
                 ON user_memories(user_id, source_system, memory_key) WHERE is_deleted = 0;
+
+            -- Gemini API key pool (fernet-encrypted at rest). key_version
+            -- lets us rotate the encryption secret later by supporting
+            -- both old and new version strings during migration.
+            CREATE TABLE IF NOT EXISTS gemini_api_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                label TEXT NOT NULL UNIQUE,
+                key_encrypted TEXT NOT NULL,
+                key_version INTEGER NOT NULL DEFAULT 1,
+                is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
+                cooldown_until TEXT,
+                last_used_at TEXT,
+                created_at TEXT NOT NULL,
+                created_by TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_gemini_keys_rotation
+                ON gemini_api_keys(is_active, cooldown_until, last_used_at);
+
+            -- Role to Gemini model routing. One row per role_name, highest
+            -- priority wins when a user carries multiple roles.
+            CREATE TABLE IF NOT EXISTS role_model_map (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                role_name TEXT NOT NULL UNIQUE,
+                model TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                updated_by TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_role_model_priority
+                ON role_model_map(priority DESC);
         """)
         # FTS5 virtual table for knowledge base search (separate statement)
         conn.execute("""

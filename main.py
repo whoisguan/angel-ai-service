@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
 from db.sqlite_db import init_db
-from routers import chat, health
+from routers import admin, chat, health
 
 # Configure logging
 logging.basicConfig(
@@ -52,3 +52,4 @@ app.add_middleware(
 # Register routers
 app.include_router(chat.router)
 app.include_router(health.router)
+app.include_router(admin.router)
