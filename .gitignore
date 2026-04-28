@@ -8,3 +8,9 @@ __pycache__/
 _*.py
 *.bak-*
 logs/
+
+# Server-side runtime artifacts (per-host state, not source)
+service.log
+stdout.log
+watchdog.log
+run_hidden.vbs
