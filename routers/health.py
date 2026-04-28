@@ -28,12 +28,21 @@ async def health_check():
         try:
             backend = (settings.LLM_BACKEND or "gemini").strip().lower()
             if backend == "gemini":
-                if not settings.GEMINI_API_KEY:
+                from services import key_store
+
+                api_key: str | None = None
+                picked = key_store.get_active_key()
+                if picked is not None:
+                    _, api_key = picked
+                elif settings.GEMINI_API_KEY:
+                    api_key = settings.GEMINI_API_KEY
+
+                if not api_key:
                     _cli_status_cache["ok"] = False
                 else:
                     async with httpx.AsyncClient(timeout=8.0) as client:
                         url = settings.GEMINI_BASE_URL.rstrip("/") + "/models"
-                        r = await client.get(url, headers={"x-goog-api-key": settings.GEMINI_API_KEY})
+                        r = await client.get(url, headers={"x-goog-api-key": api_key})
                         _cli_status_cache["ok"] = r.status_code == 200
             else:
                 import subprocess

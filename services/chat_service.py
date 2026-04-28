@@ -357,4 +357,4 @@ async def chat_stream(
                 logger.exception("Failed to save assistant message after stream")
 
     # Done event
-    yield f"data: {json.dumps({'type': 'done', 'message_id': ai_msg_id, 'cost_usd': cost_usd, 'duration_ms': duration_ms})}\n\n"
+    yield f"data: {json.dumps({'type': 'done', 'message_id': ai_msg_id, 'cost_usd': cost_usd, 'duration_ms': duration_ms, 'model': model})}\n\n"
