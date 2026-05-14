@@ -1,0 +1,4 @@
+# PowerShell scripts: preserve Windows-native CRLF for schtasks compatibility.
+# Server is Windows Server 2012 R2; powershell.exe handles both but git diffs
+# get noisy if line endings drift between hosts.
+*.ps1 text eol=crlf
